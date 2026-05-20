@@ -27,7 +27,7 @@ type MediaNode struct {
 
 func (s *Server) listNodes(c *gin.Context) {
 	rows, err := s.deps.PG.Query(c.Request.Context(),
-		`SELECT id, name, role, host_ip::text, region, max_calls,
+		`SELECT id, name, role, host(host_ip), region, max_calls,
 		        transcoding_enabled, status, last_seen_at, created_at
 		   FROM media_nodes ORDER BY id`)
 	if err != nil {
@@ -77,7 +77,7 @@ func (s *Server) createNode(c *gin.Context) {
 	err = s.deps.PG.QueryRow(c.Request.Context(), `
 		INSERT INTO media_nodes (name, role, host_ip, region, max_calls, transcoding_enabled, agent_token, status)
 		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, 'offline')
-		RETURNING id, name, role, host_ip::text, region, max_calls, transcoding_enabled, status, agent_token, last_seen_at, created_at
+		RETURNING id, name, role, host(host_ip), region, max_calls, transcoding_enabled, status, agent_token, last_seen_at, created_at
 	`, req.Name, req.Role, req.HostIP, region, req.MaxCalls, req.TranscodingEnabled, token).Scan(
 		&node.ID, &node.Name, &node.Role, &node.HostIP, &node.Region,
 		&node.MaxCalls, &node.TranscodingEnabled, &node.Status, &node.AgentToken,

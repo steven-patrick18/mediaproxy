@@ -16,21 +16,22 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const tok = getToken();
   if (tok) headers["Authorization"] = `Bearer ${tok}`;
-
   const res = await fetch(path, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
-
   if (!res.ok) {
     const msg = (data && (data.error || data.message)) || res.statusText;
     throw new ApiError(res.status, msg);
@@ -41,6 +42,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
+  patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
 };
 
@@ -86,6 +88,19 @@ export interface MediaNode {
   last_seen_at: string | null;
   created_at: string;
 }
+export interface NodeIP {
+  id: number;
+  node_id: number;
+  ip_address: string;
+  status: "active" | "disabled" | "flagged" | "reserve";
+  purchased_from?: string | null;
+  lease_block?: string | null;
+  monthly_cost?: number | null;
+  rdns?: string | null;
+  reputation_score?: number | null;
+  current_calls: number;
+  created_at: string;
+}
 export interface SignalingIP {
   id: number;
   ip_address: string;
@@ -93,4 +108,66 @@ export interface SignalingIP {
   status: "available" | "assigned" | "disabled";
   assigned_client_id?: number | null;
   created_at: string;
+}
+export interface Carrier {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  transport: "udp" | "tcp" | "tls";
+  assigned_node_id?: number | null;
+  codec_pref?: string | null;
+  status: "active" | "paused" | "disabled";
+  created_at: string;
+}
+export interface CarrierHistoryEntry {
+  id: number;
+  old_node_id?: number | null;
+  new_node_id?: number | null;
+  changed_by?: number | null;
+  changed_at: string;
+  reason?: string | null;
+}
+export interface IPGroup {
+  id: number;
+  name: string;
+  status: string;
+  notes?: string | null;
+  created_by?: number | null;
+  created_at: string;
+  ip_count: number;
+}
+export interface IPGroupMember {
+  ip_id: number;
+  ip_address: string;
+  node_id: number;
+  active: boolean;
+}
+export interface Route {
+  id: number;
+  client_id: number;
+  match_prefix?: string | null;
+  carrier_id: number;
+  priority: number;
+  status: string;
+}
+export interface Assignment {
+  id: number;
+  group_id: number;
+  client_id: number;
+  carrier_id: number;
+  rotation_strategy: string;
+  status: string;
+  assigned_by?: number | null;
+  assigned_at: string;
+}
+export interface AuditEntry {
+  id: number;
+  actor_id?: number | null;
+  action: string;
+  target?: string | null;
+  before?: unknown;
+  after?: unknown;
+  ip?: string | null;
+  ts: string;
 }

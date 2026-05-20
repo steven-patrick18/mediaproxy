@@ -32,7 +32,6 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/healthz", s.healthz)
 	r.GET("/readyz", s.readyz)
 
-	// agent endpoints use agent_token, not JWT
 	agent := r.Group("/api/v1/agent")
 	agent.Use(requireAgentAuth(s.deps.PG))
 	{
@@ -45,26 +44,69 @@ func (s *Server) Router() *gin.Engine {
 	{
 		v1.POST("/auth/login", s.login)
 
-		authed := v1.Group("")
-		authed.Use(requireAuth(s.deps.JWTSecret))
-		authed.GET("/auth/me", s.me)
+		a := v1.Group("")
+		a.Use(requireAuth(s.deps.JWTSecret))
+		a.GET("/auth/me", s.me)
 
-		authed.GET("/resellers", s.listResellers)
+		// Resellers
+		a.GET("/resellers", s.listResellers)
+		a.POST("/resellers", s.createReseller)
+		a.DELETE("/resellers/:id", s.deleteReseller)
 
-		authed.GET("/clients", s.listClients)
-		authed.GET("/clients/:id", s.getClientDetail)
-		authed.GET("/clients/:id/dialer-ips", s.listDialerIPs)
-		authed.POST("/clients/:id/dialer-ips", s.addDialerIP)
-		authed.DELETE("/clients/:id/dialer-ips/:dialer_ip_id", s.removeDialerIP)
-		authed.POST("/clients/:id/signaling-ip", s.assignSignalingIP)
-		authed.DELETE("/clients/:id/signaling-ip", s.unassignSignalingIP)
+		// Clients
+		a.GET("/clients", s.listClients)
+		a.POST("/clients", s.createClient)
+		a.GET("/clients/:id", s.getClientDetail)
+		a.DELETE("/clients/:id", s.deleteClient)
+		a.GET("/clients/:id/dialer-ips", s.listDialerIPs)
+		a.POST("/clients/:id/dialer-ips", s.addDialerIP)
+		a.DELETE("/clients/:id/dialer-ips/:dialer_ip_id", s.removeDialerIP)
+		a.POST("/clients/:id/signaling-ip", s.assignSignalingIP)
+		a.DELETE("/clients/:id/signaling-ip", s.unassignSignalingIP)
 
-		authed.GET("/nodes", s.listNodes)
-		authed.POST("/nodes", s.createNode)
+		// Nodes
+		a.GET("/nodes", s.listNodes)
+		a.POST("/nodes", s.createNode)
 
-		authed.GET("/signaling-ips", s.listSignalingIPs)
-		authed.POST("/signaling-ips", s.createSignalingIP)
-		authed.DELETE("/signaling-ips/:id", s.deleteSignalingIP)
+		// IP pool
+		a.GET("/node-ips", s.listNodeIPs)
+		a.POST("/node-ips", s.createNodeIP)
+		a.POST("/node-ips/bulk", s.bulkCreateNodeIPs)
+		a.PATCH("/node-ips/:id", s.patchNodeIP)
+		a.DELETE("/node-ips/:id", s.deleteNodeIP)
+
+		// Signaling IPs
+		a.GET("/signaling-ips", s.listSignalingIPs)
+		a.POST("/signaling-ips", s.createSignalingIP)
+		a.DELETE("/signaling-ips/:id", s.deleteSignalingIP)
+
+		// Carriers
+		a.GET("/carriers", s.listCarriers)
+		a.POST("/carriers", s.createCarrier)
+		a.PATCH("/carriers/:id", s.patchCarrier)
+		a.DELETE("/carriers/:id", s.deleteCarrier)
+		a.GET("/carriers/:id/node-history", s.carrierHistory)
+
+		// IP groups
+		a.GET("/ip-groups", s.listIPGroups)
+		a.POST("/ip-groups", s.createIPGroup)
+		a.DELETE("/ip-groups/:id", s.deleteIPGroup)
+		a.GET("/ip-groups/:id/members", s.listIPGroupMembers)
+		a.POST("/ip-groups/:id/members", s.addIPGroupMember)
+		a.DELETE("/ip-groups/:id/members/:ip_id", s.removeIPGroupMember)
+
+		// Routes
+		a.GET("/routes", s.listRoutes)
+		a.POST("/routes", s.createRoute)
+		a.DELETE("/routes/:id", s.deleteRoute)
+
+		// Assignments
+		a.GET("/assignments", s.listAssignments)
+		a.POST("/assignments", s.createAssignment)
+		a.DELETE("/assignments/:id", s.endAssignment)
+
+		// Audit log
+		a.GET("/audit", s.listAudit)
 	}
 	return r
 }
