@@ -177,9 +177,13 @@ export default function Nodes() {
     host_ip: "",
     region: "",
     max_calls: 2500,
+    ssh_user: "root",
+    ssh_port: 22,
+    ssh_password: "",
   });
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<MediaNode | null>(null);
+  const [createLog, setCreateLog] = useState<string | null>(null);
 
   const [provisioning, setProvisioning] = useState<MediaNode | null>(null);
   const [provForm, setProvForm] = useState({
@@ -226,11 +230,46 @@ export default function Nodes() {
     e.preventDefault();
     setErr(null);
     setBusy(true);
+    setCreateLog(null);
     try {
-      const node = await api.post<MediaNode>("/api/v1/nodes", form);
+      // 1) Create the node so we have an agent_token.
+      const node = await api.post<MediaNode>("/api/v1/nodes", {
+        name: form.name,
+        role: form.role,
+        host_ip: form.host_ip,
+        region: form.region,
+        max_calls: form.max_calls,
+      });
       setCreated(node);
-      setCreating(false);
-      setForm({ name: "", role: "media", host_ip: "", region: "", max_calls: 2500 });
+
+      // 2) If a password was given, install the agent right now.
+      if (form.ssh_password) {
+        setCreateLog("Connecting to " + form.host_ip + " over SSH...\n");
+        const res = await api.post<ProvisionResult>(`/api/v1/nodes/${node.id}/provision`, {
+          ssh_host: form.host_ip,
+          ssh_port: form.ssh_port,
+          ssh_user: form.ssh_user,
+          ssh_password: form.ssh_password,
+        });
+        setCreateLog(res.log);
+        if (!res.ok) {
+          setErr("Node created but provisioning failed — fix the issue and click 'Provision via SSH' on the card to retry.");
+        }
+      } else {
+        // No password supplied — close the modal as before.
+        setCreating(false);
+      }
+
+      setForm({
+        name: "",
+        role: "media",
+        host_ip: "",
+        region: "",
+        max_calls: 2500,
+        ssh_user: "root",
+        ssh_port: 22,
+        ssh_password: "",
+      });
       reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "create failed");
@@ -356,45 +395,89 @@ export default function Nodes() {
       <Modal
         open={creating}
         title="Add node"
-        onClose={() => setCreating(false)}
-        width="max-w-lg"
+        onClose={() => { setCreating(false); setCreateLog(null); }}
+        width="max-w-2xl"
         footer={
-          <>
-            <button onClick={() => setCreating(false)} className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100">Cancel</button>
-            <button onClick={submit as unknown as () => void} disabled={busy || !form.name || !form.host_ip} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60">
-              {busy ? "Saving…" : "Create"}
+          createLog ? (
+            <button onClick={() => { setCreating(false); setCreateLog(null); }} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700">
+              Close
             </button>
-          </>
+          ) : (
+            <>
+              <button onClick={() => setCreating(false)} className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100">Cancel</button>
+              <button onClick={submit as unknown as () => void} disabled={busy || !form.name || !form.host_ip} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60">
+                {busy ? "Installing…" : (form.ssh_password ? "Create + install" : "Create")}
+              </button>
+            </>
+          )
         }
       >
-        <form onSubmit={submit} className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-slate-500">Name</label>
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="media-node-1" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+        {!createLog ? (
+          <form onSubmit={submit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500">Name</label>
+                <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="media-node-1" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500">Role</label>
+                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "media" | "sip_proxy" })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
+                  <option value="media">media (RTPEngine)</option>
+                  <option value="sip_proxy">sip_proxy (Kamailio)</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-slate-500">Host IP</label>
+                <input required value={form.host_ip} onChange={(e) => setForm({ ...form, host_ip: e.target.value })} placeholder="45.77.156.60" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500">Region</label>
+                <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500">Max calls</label>
+                <input type="number" min={0} value={form.max_calls} onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            <div className="rounded border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-2 flex items-baseline justify-between">
+                <h4 className="text-sm font-medium text-slate-700">SSH auto-install</h4>
+                <span className="text-xs text-slate-500">leave password blank to skip</span>
+              </div>
+              <p className="mb-3 text-xs text-slate-500">
+                If you fill the password, the panel will SSH into the host as the user below, download
+                the agent binary, write its config + systemd unit, and start it. The password is used
+                once and never stored.
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">SSH user</label>
+                  <input value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">SSH port</label>
+                  <input type="number" value={form.ssh_port} onChange={(e) => setForm({ ...form, ssh_port: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">SSH password</label>
+                  <input type="password" autoComplete="new-password" value={form.ssh_password} onChange={(e) => setForm({ ...form, ssh_password: e.target.value })} placeholder="(optional)" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+              </div>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-2">
+            <div className="rounded bg-emerald-50 p-2 text-sm font-medium text-emerald-800">
+              Install log
+            </div>
+            <pre className="max-h-96 overflow-auto rounded bg-slate-900 p-3 font-mono text-xs text-slate-100">{createLog}</pre>
+            <p className="text-xs text-slate-500">
+              The node will flip to <strong>online</strong> on its first heartbeat (within ~10s).
+              You can close this — the Nodes page is auto-refreshing.
+            </p>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500">Role</label>
-            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "media" | "sip_proxy" })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
-              <option value="media">media (RTPEngine)</option>
-              <option value="sip_proxy">sip_proxy (Kamailio)</option>
-            </select>
-          </div>
-          <div className="col-span-2">
-            <label className="block text-xs font-medium text-slate-500">Host IP</label>
-            <input required value={form.host_ip} onChange={(e) => setForm({ ...form, host_ip: e.target.value })} placeholder="45.77.156.60" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500">Region</label>
-            <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500">Max calls</label>
-            <input type="number" min={0} value={form.max_calls} onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
-          </div>
-          <p className="col-span-2 text-xs text-slate-500">
-            After creating, use "Provision via SSH" on the node card to install the agent.
-          </p>
-        </form>
+        )}
       </Modal>
 
       <Modal
