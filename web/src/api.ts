@@ -244,23 +244,6 @@ export interface Assignment {
   assigned_by?: number | null;
   assigned_at: string;
 }
-export interface Integration {
-  id: number;
-  name: string;
-  provider: "signalwire" | "freeswitch" | "twilio" | "other";
-  config: Record<string, unknown>;
-  status: "unverified" | "verified" | "failed" | "disabled";
-  last_verified_at?: string | null;
-  last_error?: string | null;
-  created_by?: number | null;
-  created_at: string;
-}
-export interface VerifyResponse {
-  ok: boolean;
-  status: string;
-  status_code?: number;
-  error?: string;
-}
 export interface AuditEntry {
   id: number;
   actor_id?: number | null;

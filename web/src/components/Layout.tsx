@@ -44,7 +44,6 @@ const nav: NavSection[] = [
     label: "System",
     items: [
       { to: "/users", label: "Admin users" },
-      { to: "/integrations", label: "Integrations" },
       { to: "/audit", label: "Audit log" },
       { to: "/settings", label: "Settings" },
     ],

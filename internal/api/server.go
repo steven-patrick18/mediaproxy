@@ -132,13 +132,6 @@ func (s *Server) Router() *gin.Engine {
 		a.PATCH("/admin-users/:id", s.patchAdminUser)
 		a.DELETE("/admin-users/:id", s.deleteAdminUser)
 
-		// External API integrations (SignalWire, FreeSWITCH, ...)
-		a.GET("/integrations", s.listIntegrations)
-		a.POST("/integrations", s.createIntegration)
-		a.PATCH("/integrations/:id", s.patchIntegration)
-		a.DELETE("/integrations/:id", s.deleteIntegration)
-		a.POST("/integrations/:id/verify", s.verifyIntegration)
-
 		// Audit log
 		a.GET("/audit", s.listAudit)
 	}
