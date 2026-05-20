@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, type MediaNode, type SignalingIP } from "../api";
+import { Link } from "react-router-dom";
+import { api, type Client, type MediaNode, type SignalingIP } from "../api";
 
 export default function SignalingIPs() {
   const [rows, setRows] = useState<SignalingIP[]>([]);
   const [nodes, setNodes] = useState<MediaNode[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ip_address: "", sip_proxy_node_id: 0 });
@@ -13,13 +15,18 @@ export default function SignalingIPs() {
     Promise.all([
       api.get<SignalingIP[]>("/api/v1/signaling-ips"),
       api.get<MediaNode[]>("/api/v1/nodes"),
+      api.get<Client[]>("/api/v1/clients"),
     ])
-      .then(([s, n]) => {
+      .then(([s, n, c]) => {
         setRows(s);
         setNodes(n);
+        setClients(c);
       })
       .catch((e) => setErr(e.message));
   }
+
+  const clientNameFor = (id: number | null | undefined) =>
+    id ? clients.find((c) => c.id === id) ?? null : null;
   useEffect(reload, []);
 
   const sipProxies = nodes.filter((n) => n.role === "sip_proxy");
@@ -182,7 +189,16 @@ export default function SignalingIPs() {
                   )}
                 </td>
                 <td className="px-4 py-2 text-slate-600">
-                  {s.assigned_client_id ?? "—"}
+                  {(() => {
+                    const c = clientNameFor(s.assigned_client_id);
+                    if (!c) return "—";
+                    return (
+                      <Link to={`/clients/${c.id}`} className="hover:underline">
+                        <span className="font-medium">{c.name}</span>{" "}
+                        <span className="text-xs text-slate-400">#{c.id}</span>
+                      </Link>
+                    );
+                  })()}
                 </td>
                 <td className="px-4 py-2 text-right">
                   <button
