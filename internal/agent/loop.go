@@ -163,12 +163,22 @@ func persistAndServices(cfg *Config, expected []string) {
 	}
 	switch cfg.Role {
 	case "media":
-		if err := UpdateRTPEngineInterfaces(cfg.RTPEngineConfPath, expected); err != nil {
-			slog.Error("rtpengine update", "err", err)
+		// Full rtpengine.conf rewrite + reload-or-restart (idempotent;
+		// reload-or-restart preserves in-flight calls when the daemon
+		// supports SIGUSR1 reload, otherwise systemd does a graceful restart).
+		body := GenRTPEngineConfig(expected)
+		if err := WriteRTPEngineConfig(cfg.RTPEngineConfPath, body); err != nil {
+			slog.Error("rtpengine write", "err", err)
+		} else if err := systemctlAction("rtpengine", "reload-or-restart"); err != nil {
+			slog.Warn("rtpengine reload", "err", err)
 		}
 	case "sip_proxy":
-		if err := UpdateKamailioListen(cfg.KamailioListenPath, expected); err != nil {
-			slog.Error("kamailio listen update", "err", err)
+		// Full kamailio.cfg + listen.cfg rewrite + reload-or-restart.
+		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken)
+		if err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg); err != nil {
+			slog.Error("kamailio write", "err", err)
+		} else if err := systemctlAction("kamailio", "reload-or-restart"); err != nil {
+			slog.Warn("kamailio reload", "err", err)
 		}
 	}
 }

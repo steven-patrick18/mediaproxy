@@ -86,9 +86,28 @@ func Run(ctx context.Context, r Request) Result {
 	if err := run(client,
 		"DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables at && systemctl enable --now atd",
 		&b); err != nil {
-		// Non-fatal — the agent and SIP service still work without these,
-		// just the firewall-apply command won't.
 		log("WARNING: apt install failed (continuing): %v", err)
+	}
+
+	// Role-specific SIP / media packages. We deliberately disable the
+	// service after install — the agent will write its config and start
+	// it on the next reconcile tick. This avoids a stock-config crash
+	// loop on first boot.
+	switch r.Role {
+	case "sip_proxy":
+		log("Installing Kamailio (sip_proxy role)")
+		if err := run(client,
+			`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kamailio kamailio-tls-modules kamailio-utils-modules kamailio-extra-modules kamailio-json-modules kamailio-http-async-modules || true && systemctl disable kamailio || true && systemctl stop kamailio || true`,
+			&b); err != nil {
+			log("WARNING: kamailio install: %v", err)
+		}
+	case "media":
+		log("Installing RTPEngine (media role)")
+		if err := run(client,
+			`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ngcp-rtpengine-daemon || true && systemctl disable ngcp-rtpengine-daemon || true && systemctl stop ngcp-rtpengine-daemon || true`,
+			&b); err != nil {
+			log("WARNING: rtpengine install (it's in apt for some Ubuntu+sury repos only; you may need to add a repo): %v", err)
+		}
 	}
 
 	log("Downloading agent binary from %s", r.BinaryURL)

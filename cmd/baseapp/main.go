@@ -54,6 +54,10 @@ func main() {
 		SigCache:  &sigcache.Writer{PG: pg, Redis: rdb},
 	})
 
+	// Background workers: webhook delivery + node-offline alerting.
+	srv.StartWebhookWorker(ctx)
+	srv.StartAlertWorker(ctx)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPListen,
 		Handler:           srv.Router(),

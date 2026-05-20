@@ -15,6 +15,7 @@ import (
 type loginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=1"`
+	MFACode  string `json:"mfa_code"`
 }
 
 type loginResponse struct {
@@ -38,15 +39,17 @@ func (s *Server) login(c *gin.Context) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
 	var (
-		id     int64
-		hash   string
-		role   string
-		status string
+		id          int64
+		hash        string
+		role        string
+		status      string
+		mfaSecret   *string
+		mfaEnrolled bool
 	)
 	err := s.deps.PG.QueryRow(c.Request.Context(),
-		`SELECT id, password_hash, role, status FROM admin_users WHERE email = $1`,
+		`SELECT id, password_hash, role, status, mfa_secret, mfa_enrolled FROM admin_users WHERE email = $1`,
 		req.Email,
-	).Scan(&id, &hash, &role, &status)
+	).Scan(&id, &hash, &role, &status, &mfaSecret, &mfaEnrolled)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && status != "active") || (err == nil && !auth.VerifyPassword(hash, req.Password)) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
@@ -54,6 +57,19 @@ func (s *Server) login(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 		return
+	}
+
+	// MFA gate: if enrolled, require a 6-digit TOTP. Return a specific
+	// error code so the UI can show the MFA prompt.
+	if mfaEnrolled && mfaSecret != nil && *mfaSecret != "" {
+		if req.MFACode == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "mfa_required", "mfa_required": true})
+			return
+		}
+		if !validateTOTP(*mfaSecret, req.MFACode) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid mfa code"})
+			return
+		}
 	}
 
 	ttl := 24 * time.Hour

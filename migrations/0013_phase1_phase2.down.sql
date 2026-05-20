@@ -1,0 +1,10 @@
+BEGIN;
+DROP TABLE IF EXISTS alert_state;
+DROP TABLE IF EXISTS webhook_deliveries;
+DROP TABLE IF EXISTS webhooks;
+ALTER TABLE admin_users DROP COLUMN IF EXISTS mfa_recovery_codes;
+ALTER TABLE admin_users DROP COLUMN IF EXISTS mfa_enrolled;
+DROP INDEX IF EXISTS idx_cdr_dnis;
+DROP INDEX IF EXISTS idx_cdr_ani;
+ALTER TABLE assignments DROP COLUMN IF EXISTS rotation_cursor;
+COMMIT;

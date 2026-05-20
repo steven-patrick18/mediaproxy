@@ -41,6 +41,8 @@ func (s *Server) Router() *gin.Engine {
 		agent.POST("/command-result", s.agentCommandResult)
 		agent.GET("/firewall", s.agentFirewallConfig)
 		agent.POST("/firewall-applied", s.agentFirewallApplied)
+		agent.POST("/call-start", s.callStart)
+		agent.POST("/call-end", s.callEnd)
 	}
 
 	v1 := r.Group("/api/v1")
@@ -143,6 +145,22 @@ func (s *Server) Router() *gin.Engine {
 
 		// Audit log
 		a.GET("/audit", s.listAudit)
+
+		// Test-route diagnostic — admin can preview what routing would do.
+		a.GET("/route", s.routeResolve)
+
+		// MFA
+		a.POST("/mfa/setup", s.mfaSetup)
+		a.POST("/mfa/verify", s.mfaVerify)
+		a.POST("/mfa/disable", s.mfaDisable)
+
+		// Webhooks
+		a.GET("/webhooks", s.listWebhooks)
+		a.POST("/webhooks", s.createWebhook)
+		a.PATCH("/webhooks/:id", s.patchWebhook)
+		a.DELETE("/webhooks/:id", s.deleteWebhook)
+		a.POST("/webhooks/:id/test", s.testWebhook)
+		a.GET("/webhooks/:id/deliveries", s.listWebhookDeliveries)
 	}
 	return r
 }
