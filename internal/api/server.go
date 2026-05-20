@@ -67,6 +67,11 @@ func (s *Server) Router() *gin.Engine {
 		// Nodes
 		a.GET("/nodes", s.listNodes)
 		a.POST("/nodes", s.createNode)
+		a.PATCH("/nodes/:id", s.patchNode)
+		a.DELETE("/nodes/:id", s.deleteNode)
+		a.POST("/nodes/:id/drain", s.drainNode)
+		a.POST("/nodes/:id/undrain", s.undrainNode)
+		a.GET("/nodes/:id/metrics", s.nodeMetrics)
 
 		// IP pool
 		a.GET("/node-ips", s.listNodeIPs)

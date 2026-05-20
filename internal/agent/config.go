@@ -14,7 +14,7 @@ type Config struct {
 	ControlPlaneURL     string        `yaml:"control_plane_url"`
 	AgentToken          string        `yaml:"agent_token"`
 	Iface               string        `yaml:"iface"`
-	CIDR                int           `yaml:"cidr"`           // default 24
+	CIDR                int           `yaml:"cidr"` // default 24
 	ManagedNetplanFile  string        `yaml:"managed_netplan_file"`
 	HeartbeatSeconds    int           `yaml:"heartbeat_seconds"`
 	ProtectIPs          []string      `yaml:"protect_ips"`
@@ -22,6 +22,13 @@ type Config struct {
 	RTPEngineConfPath   string        `yaml:"rtpengine_conf_path"`
 	KamailioListenPath  string        `yaml:"kamailio_listen_path"`
 	HTTPTimeout         time.Duration `yaml:"http_timeout"`
+
+	// ReadOnly: if true, the agent only reports metrics + bound IPs and
+	// never calls `ip addr add/del`, `netplan apply`, or touches
+	// rtpengine/kamailio configs. Useful for running unprivileged
+	// (development, smoke tests on a host that already has its own
+	// networking). Defaults to false in production.
+	ReadOnly bool `yaml:"read_only"`
 }
 
 func LoadConfig(path string) (*Config, error) {

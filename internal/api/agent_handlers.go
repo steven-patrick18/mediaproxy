@@ -48,6 +48,7 @@ type agentRegisterRequest struct {
 	Cores            int    `json:"cores"`
 	RAMMB            int    `json:"ram_mb"`
 	RTPEngineVersion string `json:"rtpengine_version"`
+	AgentVersion     string `json:"agent_version"`
 }
 
 type agentDirectiveResponse struct {
@@ -61,37 +62,37 @@ func (s *Server) agentRegister(c *gin.Context) {
 	role := c.GetString("agent_node_role")
 
 	var req agentRegisterRequest
-	_ = c.ShouldBindJSON(&req) // tolerate empty body
+	_ = c.ShouldBindJSON(&req)
 
 	_, _ = s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE media_nodes
-		   SET cpu_cores = COALESCE(NULLIF($2, 0), cpu_cores),
-		       ram_gb    = COALESCE(NULLIF($3, 0), ram_gb),
+		   SET cpu_cores         = COALESCE(NULLIF($2, 0), cpu_cores),
+		       ram_gb            = COALESCE(NULLIF($3, 0), ram_gb),
 		       rtpengine_version = COALESCE(NULLIF($4, ''), rtpengine_version),
-		       last_seen_at = now(),
-		       status = CASE WHEN status = 'draining' THEN 'draining' ELSE 'online' END
+		       agent_version     = COALESCE(NULLIF($5, ''), agent_version),
+		       last_seen_at      = now(),
+		       status            = CASE WHEN status = 'draining' THEN 'draining' ELSE 'online' END
 		 WHERE id = $1
-	`, nodeID, req.Cores, req.RAMMB/1024, req.RTPEngineVersion)
+	`, nodeID, req.Cores, req.RAMMB/1024, req.RTPEngineVersion, req.AgentVersion)
 
 	expected, err := s.expectedIPs(c.Request.Context(), nodeID, role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, agentDirectiveResponse{
-		NodeID:      nodeID,
-		Role:        role,
-		ExpectedIPs: expected,
-	})
+	c.JSON(http.StatusOK, agentDirectiveResponse{NodeID: nodeID, Role: role, ExpectedIPs: expected})
 }
 
 type agentHeartbeatRequest struct {
-	BoundIPs    []string `json:"bound_ips"`
-	ActiveCalls int      `json:"active_calls"`
-	CPUPct      float64  `json:"cpu_pct"`
-	RAMPct      float64  `json:"ram_pct"`
-	NetInMbps   float64  `json:"net_in_mbps"`
-	NetOutMbps  float64  `json:"net_out_mbps"`
+	BoundIPs       []string `json:"bound_ips"`
+	ActiveCalls    int      `json:"active_calls"`
+	CPUPct         float64  `json:"cpu_pct"`
+	RAMPct         float64  `json:"ram_pct"`
+	NetInMbps      float64  `json:"net_in_mbps"`
+	NetOutMbps     float64  `json:"net_out_mbps"`
+	PacketLossPct  float64  `json:"packet_loss_pct"`
+	UptimeSeconds  int64    `json:"uptime_seconds"`
+	AgentVersion   string   `json:"agent_version"`
 }
 
 type agentCommand struct {
@@ -114,17 +115,38 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 	var req agentHeartbeatRequest
 	_ = c.ShouldBindJSON(&req)
 
+	// Update the latest-snapshot columns + bump last_seen_at.
 	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE media_nodes
-		   SET last_seen_at = now(),
-		       status = CASE WHEN status = 'draining' THEN 'draining' ELSE 'online' END
+		   SET last_seen_at    = now(),
+		       status          = CASE WHEN status = 'draining' THEN 'draining' ELSE 'online' END,
+		       active_calls    = $2,
+		       cpu_pct         = $3,
+		       ram_pct         = $4,
+		       net_in_mbps     = $5,
+		       net_out_mbps    = $6,
+		       packet_loss_pct = $7,
+		       uptime_seconds  = NULLIF($8, 0),
+		       agent_version   = COALESCE(NULLIF($9, ''), agent_version),
+		       ips_bound       = $10
 		 WHERE id = $1
-	`, nodeID); err != nil {
+	`,
+		nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct,
+		req.NetInMbps, req.NetOutMbps, req.PacketLossPct,
+		req.UptimeSeconds, req.AgentVersion, len(req.BoundIPs),
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Touch last_health_check on every IP this node owns.
+	// Append a time-series row.
+	_, _ = s.deps.PG.Exec(c.Request.Context(), `
+		INSERT INTO node_metrics (node_id, active_calls, cpu_pct, ram_pct,
+		                          net_in_mbps, net_out_mbps, packet_loss_pct)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct, req.NetInMbps, req.NetOutMbps, req.PacketLossPct)
+
+	// Touch last_health_check on IPs the agent is currently binding.
 	_, _ = s.deps.PG.Exec(c.Request.Context(),
 		`UPDATE node_ips SET last_health_check = now() WHERE node_id = $1`, nodeID)
 
@@ -133,12 +155,7 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Commands queue is not yet persisted; return empty for now.
-	c.JSON(http.StatusOK, agentHeartbeatResponse{
-		ExpectedIPs: expected,
-		Commands:    []agentCommand{},
-	})
+	c.JSON(http.StatusOK, agentHeartbeatResponse{ExpectedIPs: expected, Commands: []agentCommand{}})
 }
 
 type agentCommandResultRequest struct {
@@ -153,12 +170,9 @@ func (s *Server) agentCommandResult(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// TODO: persist into a node_commands table once it exists.
 	c.Status(http.StatusNoContent)
 }
 
-// expectedIPs returns the authoritative set of IPs that should be bound on
-// this node — node_ips for media role, signaling_ips for sip_proxy role.
 func (s *Server) expectedIPs(ctx context.Context, nodeID int64, role string) ([]string, error) {
 	var query string
 	switch role {
@@ -166,7 +180,7 @@ func (s *Server) expectedIPs(ctx context.Context, nodeID int64, role string) ([]
 		query = `SELECT host(ip_address) FROM signaling_ips
 		          WHERE sip_proxy_node_id = $1 AND status != 'disabled'
 		          ORDER BY ip_address`
-	default: // media
+	default:
 		query = `SELECT host(ip_address) FROM node_ips
 		          WHERE node_id = $1 AND status IN ('active','reserve')
 		          ORDER BY ip_address`

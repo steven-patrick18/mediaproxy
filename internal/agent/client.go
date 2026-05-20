@@ -57,6 +57,7 @@ type RegisterReq struct {
 	Cores            int    `json:"cores"`
 	RAMMB            int    `json:"ram_mb"`
 	RTPEngineVersion string `json:"rtpengine_version"`
+	AgentVersion     string `json:"agent_version"`
 }
 
 type DirectiveResp struct {
@@ -74,12 +75,15 @@ func (c *Client) Register(ctx context.Context, r RegisterReq) (*DirectiveResp, e
 }
 
 type HeartbeatReq struct {
-	BoundIPs    []string `json:"bound_ips"`
-	ActiveCalls int      `json:"active_calls"`
-	CPUPct      float64  `json:"cpu_pct"`
-	RAMPct      float64  `json:"ram_pct"`
-	NetInMbps   float64  `json:"net_in_mbps"`
-	NetOutMbps  float64  `json:"net_out_mbps"`
+	BoundIPs      []string `json:"bound_ips"`
+	ActiveCalls   int      `json:"active_calls"`
+	CPUPct        float64  `json:"cpu_pct"`
+	RAMPct        float64  `json:"ram_pct"`
+	NetInMbps     float64  `json:"net_in_mbps"`
+	NetOutMbps    float64  `json:"net_out_mbps"`
+	PacketLossPct float64  `json:"packet_loss_pct"`
+	UptimeSeconds int64    `json:"uptime_seconds"`
+	AgentVersion  string   `json:"agent_version"`
 }
 
 type Command struct {

@@ -9,26 +9,25 @@ import (
 )
 
 type Agent struct {
-	Cfg    *Config
-	API    *Client
-	hostnm string
+	Cfg     *Config
+	API     *Client
+	hostnm  string
+	sampler *Sampler
 }
 
 func New(cfg *Config) *Agent {
 	h, _ := os.Hostname()
 	return &Agent{
-		Cfg:    cfg,
-		API:    NewClient(cfg.ControlPlaneURL, cfg.AgentToken, cfg.HTTPTimeout),
-		hostnm: h,
+		Cfg:     cfg,
+		API:     NewClient(cfg.ControlPlaneURL, cfg.AgentToken, cfg.HTTPTimeout),
+		hostnm:  h,
+		sampler: NewSampler(cfg.Iface),
 	}
 }
 
-// Run executes the boot sequence then enters the heartbeat loop.
-// Returns only on ctx cancellation.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.boot(ctx); err != nil {
 		slog.Error("agent boot failed", "err", err)
-		// continue into heartbeat loop anyway — control plane may come back
 	}
 
 	t := time.NewTicker(time.Duration(a.Cfg.HeartbeatSeconds) * time.Second)
@@ -47,15 +46,19 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) boot(ctx context.Context) error {
-	slog.Info("registering with control plane", "url", a.Cfg.ControlPlaneURL, "node_id", a.Cfg.NodeID)
+	slog.Info("registering with control plane",
+		"url", a.Cfg.ControlPlaneURL, "node_id", a.Cfg.NodeID, "read_only", a.Cfg.ReadOnly)
 	dir, err := a.API.Register(ctx, RegisterReq{
-		Hostname: a.hostnm,
-		Cores:    runtime.NumCPU(),
+		Hostname:     a.hostnm,
+		Cores:        runtime.NumCPU(),
+		AgentVersion: Version,
 	})
 	if err != nil {
 		return err
 	}
 	slog.Info("registered", "expected_ips", len(dir.ExpectedIPs))
+	// Prime the CPU + network samplers so the first real tick has deltas.
+	_ = a.sampler.Sample()
 	a.reconcile(ctx, dir.ExpectedIPs)
 	return nil
 }
@@ -63,10 +66,21 @@ func (a *Agent) boot(ctx context.Context) error {
 func (a *Agent) tick(ctx context.Context) error {
 	bound, err := ScanIPs(a.Cfg.Iface)
 	if err != nil {
-		return err
+		// On a host without the configured iface, just report empty.
+		slog.Warn("scan iface", "err", err)
+		bound = []string{}
 	}
+	snap := a.sampler.Sample()
+
 	hb, err := a.API.Heartbeat(ctx, HeartbeatReq{
-		BoundIPs: bound,
+		BoundIPs:      bound,
+		ActiveCalls:   0, // TODO: query rtpengine when role=media
+		CPUPct:        snap.CPUPct,
+		RAMPct:        snap.RAMPct,
+		NetInMbps:     snap.NetInMbps,
+		NetOutMbps:    snap.NetOutMbps,
+		UptimeSeconds: snap.UptimeSeconds,
+		AgentVersion:  Version,
 	})
 	if err != nil {
 		return err
@@ -81,12 +95,13 @@ func (a *Agent) tick(ctx context.Context) error {
 // reconcile makes the NIC + persistence layers match the expected set.
 // Safety rules:
 //   - never touch IPs in ProtectIPs
+//   - in read_only mode, only log drift, never change anything
 //   - add IPs that are expected but missing (self-heal)
-//   - do NOT auto-delete extras; just report (control plane logs the drift)
+//   - never auto-delete extras; just report
 func (a *Agent) reconcile(_ context.Context, expected []string) {
 	bound, err := ScanIPs(a.Cfg.Iface)
 	if err != nil {
-		slog.Error("scan iface", "err", err)
+		// Already warned in tick(); avoid a second log line here.
 		return
 	}
 	protect := map[string]bool{}
@@ -102,13 +117,29 @@ func (a *Agent) reconcile(_ context.Context, expected []string) {
 		expectedSet[e] = true
 	}
 
-	// Add missing
 	missing := []string{}
 	for e := range expectedSet {
 		if !boundSet[e] {
 			missing = append(missing, e)
 		}
 	}
+	extras := []string{}
+	for b := range boundSet {
+		if !expectedSet[b] && !protect[b] {
+			extras = append(extras, b)
+		}
+	}
+
+	if a.Cfg.ReadOnly {
+		if len(missing) > 0 {
+			slog.Info("[read-only] would add missing IPs", "ips", missing)
+		}
+		if len(extras) > 0 {
+			slog.Debug("[read-only] extra IPs on nic (not in expected set)", "ips", extras)
+		}
+		return
+	}
+
 	for _, ip := range missing {
 		if protect[ip] {
 			continue
@@ -119,18 +150,10 @@ func (a *Agent) reconcile(_ context.Context, expected []string) {
 		}
 		slog.Info("added ip", "ip", ip)
 	}
-
-	// Extras — log only.
-	for b := range boundSet {
-		if protect[b] {
-			continue
-		}
-		if !expectedSet[b] {
-			slog.Warn("extra ip on nic (not in expected set)", "ip", b)
-		}
+	for _, ip := range extras {
+		slog.Warn("extra ip on nic (not in expected set)", "ip", ip)
 	}
 
-	// Persist + update services with the full expected set.
 	persistAndServices(a.Cfg, expected)
 }
 
@@ -151,34 +174,30 @@ func persistAndServices(cfg *Config, expected []string) {
 }
 
 func (a *Agent) runCommand(ctx context.Context, cmd Command) {
+	if a.Cfg.ReadOnly {
+		_ = a.API.AckCommand(ctx, CommandResult{CommandID: cmd.ID, Status: "error", Detail: "agent is read-only"})
+		return
+	}
 	var detail string
 	status := "ok"
 	switch cmd.Type {
 	case "add_ip":
 		if err := AddIP(a.Cfg.Iface, cmd.IP, cmd.CIDR); err != nil {
-			status = "error"
-			detail = err.Error()
+			status, detail = "error", err.Error()
 		}
 	case "remove_ip":
 		for _, p := range a.Cfg.ProtectIPs {
 			if p == cmd.IP {
-				status = "error"
-				detail = "ip is protected"
+				status, detail = "error", "ip is protected"
 			}
 		}
 		if status == "ok" {
 			if err := RemoveIP(a.Cfg.Iface, cmd.IP, cmd.CIDR); err != nil {
-				status = "error"
-				detail = err.Error()
+				status, detail = "error", err.Error()
 			}
 		}
 	default:
-		status = "error"
-		detail = "unsupported command type: " + cmd.Type
+		status, detail = "error", "unsupported command type: "+cmd.Type
 	}
-	_ = a.API.AckCommand(ctx, CommandResult{
-		CommandID: cmd.ID,
-		Status:    status,
-		Detail:    detail,
-	})
+	_ = a.API.AckCommand(ctx, CommandResult{CommandID: cmd.ID, Status: status, Detail: detail})
 }

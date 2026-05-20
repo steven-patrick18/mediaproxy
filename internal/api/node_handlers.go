@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
 
+// MediaNode is the list-and-create response shape. ListNodes also returns
+// the latest snapshot of metrics so the UI doesn't need a separate call.
 type MediaNode struct {
 	ID                 int64      `json:"id"`
 	Name               string     `json:"name"`
@@ -23,13 +26,45 @@ type MediaNode struct {
 	AgentToken         string     `json:"agent_token,omitempty"`
 	LastSeenAt         *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
+	// Latest snapshot from heartbeat
+	ActiveCalls    *int     `json:"active_calls,omitempty"`
+	CPUPct         *float64 `json:"cpu_pct,omitempty"`
+	RAMPct         *float64 `json:"ram_pct,omitempty"`
+	NetInMbps      *float64 `json:"net_in_mbps,omitempty"`
+	NetOutMbps     *float64 `json:"net_out_mbps,omitempty"`
+	PacketLossPct  *float64 `json:"packet_loss_pct,omitempty"`
+	UptimeSeconds  *int64   `json:"uptime_seconds,omitempty"`
+	AgentVersion   *string  `json:"agent_version,omitempty"`
+	IPsBound       int      `json:"ips_bound"`
+	IPsTotal       int      `json:"ips_total"`
 }
 
+// computedStatus flips a node to "offline" if last_seen_at is older than
+// staleAfter (in SQL). Draining stays draining (operator-driven). Without
+// a last_seen_at row the node is offline.
+const nodeStatusExpr = `
+	CASE
+	  WHEN n.status = 'draining' AND n.last_seen_at >= now() - interval '2 minutes' THEN 'draining'
+	  WHEN n.last_seen_at IS NULL OR n.last_seen_at < now() - interval '2 minutes' THEN 'offline'
+	  ELSE n.status
+	END
+`
+
 func (s *Server) listNodes(c *gin.Context) {
-	rows, err := s.deps.PG.Query(c.Request.Context(),
-		`SELECT id, name, role, host(host_ip), region, max_calls,
-		        transcoding_enabled, status, last_seen_at, created_at
-		   FROM media_nodes ORDER BY id`)
+	q := `
+		SELECT n.id, n.name, n.role, host(n.host_ip), n.region, n.max_calls,
+		       n.transcoding_enabled, ` + nodeStatusExpr + ` AS effective_status,
+		       n.last_seen_at, n.created_at,
+		       n.active_calls, n.cpu_pct, n.ram_pct,
+		       n.net_in_mbps, n.net_out_mbps, n.packet_loss_pct,
+		       n.uptime_seconds, n.agent_version,
+		       COALESCE(n.ips_bound, 0),
+		       (SELECT count(*) FROM node_ips      WHERE node_id = n.id) +
+		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total
+		  FROM media_nodes n
+		 ORDER BY n.id
+	`
+	rows, err := s.deps.PG.Query(c.Request.Context(), q)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -39,8 +74,9 @@ func (s *Server) listNodes(c *gin.Context) {
 	for rows.Next() {
 		var n MediaNode
 		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.HostIP, &n.Region,
-			&n.MaxCalls, &n.TranscodingEnabled, &n.Status,
-			&n.LastSeenAt, &n.CreatedAt); err != nil {
+			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
+			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
+			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -77,14 +113,14 @@ func (s *Server) createNode(c *gin.Context) {
 	err = s.deps.PG.QueryRow(c.Request.Context(), `
 		INSERT INTO media_nodes (name, role, host_ip, region, max_calls, transcoding_enabled, agent_token, status)
 		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, 'offline')
-		RETURNING id, name, role, host(host_ip), region, max_calls, transcoding_enabled, status, agent_token, last_seen_at, created_at
+		RETURNING id, name, role, host(host_ip), region, max_calls, transcoding_enabled,
+		          status, agent_token, last_seen_at, created_at
 	`, req.Name, req.Role, req.HostIP, region, req.MaxCalls, req.TranscodingEnabled, token).Scan(
 		&node.ID, &node.Name, &node.Role, &node.HostIP, &node.Region,
 		&node.MaxCalls, &node.TranscodingEnabled, &node.Status, &node.AgentToken,
 		&node.LastSeenAt, &node.CreatedAt,
 	)
 	if err != nil {
-		// duplicate name?
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "insert returned no row"})
 			return
@@ -93,6 +129,159 @@ func (s *Server) createNode(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, node)
+}
+
+type patchNodeRequest struct {
+	Name               *string `json:"name"`
+	Region             *string `json:"region"`
+	MaxCalls           *int    `json:"max_calls"`
+	TranscodingEnabled *bool   `json:"transcoding_enabled"`
+}
+
+func (s *Server) patchNode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE media_nodes
+		   SET name                = COALESCE($2, name),
+		       region              = COALESCE($3, region),
+		       max_calls           = COALESCE($4, max_calls),
+		       transcoding_enabled = COALESCE($5, transcoding_enabled)
+		 WHERE id = $1
+	`, id, req.Name, req.Region, req.MaxCalls, req.TranscodingEnabled)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) drainNode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE media_nodes SET status = 'draining' WHERE id = $1`, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) undrainNode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	// agent will flip it back to 'online' on next heartbeat
+	tag, err := s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE media_nodes SET status = 'offline' WHERE id = $1 AND status = 'draining'`, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found or not draining"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) deleteNode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	// Guard: refuse if IPs or signaling IPs still live here.
+	var n int
+	if err := s.deps.PG.QueryRow(c.Request.Context(),
+		`SELECT (SELECT count(*) FROM node_ips WHERE node_id = $1) +
+		        (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = $1)`, id).Scan(&n); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if n > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "node still owns IPs; remove them first"})
+		return
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `DELETE FROM media_nodes WHERE id = $1`, id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type MetricPoint struct {
+	Ts             time.Time `json:"ts"`
+	ActiveCalls    *int      `json:"active_calls,omitempty"`
+	CPUPct         *float64  `json:"cpu_pct,omitempty"`
+	RAMPct         *float64  `json:"ram_pct,omitempty"`
+	NetInMbps      *float64  `json:"net_in_mbps,omitempty"`
+	NetOutMbps     *float64  `json:"net_out_mbps,omitempty"`
+	PacketLossPct  *float64  `json:"packet_loss_pct,omitempty"`
+}
+
+// GET /api/v1/nodes/:id/metrics?minutes=60
+func (s *Server) nodeMetrics(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	minutes := 60
+	if q := c.Query("minutes"); q != "" {
+		if v, err := strconv.Atoi(q); err == nil && v > 0 && v <= 24*60 {
+			minutes = v
+		}
+	}
+	rows, err := s.deps.PG.Query(c.Request.Context(), `
+		SELECT ts, active_calls, cpu_pct, ram_pct, net_in_mbps, net_out_mbps, packet_loss_pct
+		  FROM node_metrics
+		 WHERE node_id = $1 AND ts >= now() - ($2 * interval '1 minute')
+		 ORDER BY ts
+	`, id, minutes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []MetricPoint{}
+	for rows.Next() {
+		var p MetricPoint
+		if err := rows.Scan(&p.Ts, &p.ActiveCalls, &p.CPUPct, &p.RAMPct,
+			&p.NetInMbps, &p.NetOutMbps, &p.PacketLossPct); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		out = append(out, p)
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 func randomToken(nBytes int) (string, error) {

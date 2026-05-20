@@ -87,6 +87,25 @@ export interface MediaNode {
   agent_token?: string;
   last_seen_at: string | null;
   created_at: string;
+  active_calls?: number | null;
+  cpu_pct?: number | null;
+  ram_pct?: number | null;
+  net_in_mbps?: number | null;
+  net_out_mbps?: number | null;
+  packet_loss_pct?: number | null;
+  uptime_seconds?: number | null;
+  agent_version?: string | null;
+  ips_bound: number;
+  ips_total: number;
+}
+export interface MetricPoint {
+  ts: string;
+  active_calls?: number | null;
+  cpu_pct?: number | null;
+  ram_pct?: number | null;
+  net_in_mbps?: number | null;
+  net_out_mbps?: number | null;
+  packet_loss_pct?: number | null;
 }
 export interface NodeIP {
   id: number;
