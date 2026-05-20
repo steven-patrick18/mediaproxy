@@ -16,6 +16,7 @@ import CDRs from "./pages/CDRs";
 import Reports from "./pages/Reports";
 import AuditLog from "./pages/AuditLog";
 import Users from "./pages/Users";
+import Integrations from "./pages/Integrations";
 import SettingsPage from "./pages/Settings";
 import Layout from "./components/Layout";
 import { useAuth } from "./auth";
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="assignments" element={<Assignments />} />
 
         <Route path="users" element={<Users />} />
+        <Route path="integrations" element={<Integrations />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
