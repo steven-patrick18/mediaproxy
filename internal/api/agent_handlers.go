@@ -148,18 +148,16 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct, req.NetInMbps, req.NetOutMbps, req.PacketLossPct)
 
-	// Auto-discover IPs reported by the agent. Skip the node's management
-	// host_ip — that's the management interface, not a media/signaling IP.
-	// For media nodes, IPs go into node_ips (the media-IP pool).
-	// For sip_proxy nodes, IPs go into signaling_ips so the operator can
-	// assign them to clients.
+	// Auto-discover every IP reported by the agent. The operator can later
+	// disable IPs they don't want to use (e.g. the host's management IP)
+	// via the Signaling IPs / IP Pool pages — but we don't second-guess
+	// what's bound on the NIC at discovery time.
 	switch role {
 	case "media":
 		for _, ip := range req.BoundIPs {
 			_, _ = s.deps.PG.Exec(c.Request.Context(), `
 				INSERT INTO node_ips (node_id, ip_address, status, auto_discovered)
-				SELECT $1, $2::inet, 'active', true
-				WHERE $2::inet IS DISTINCT FROM (SELECT host_ip FROM media_nodes WHERE id = $1)
+				VALUES ($1, $2::inet, 'active', true)
 				ON CONFLICT (ip_address) DO UPDATE
 				   SET node_id = EXCLUDED.node_id,
 				       last_health_check = now()
@@ -169,8 +167,7 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		for _, ip := range req.BoundIPs {
 			_, _ = s.deps.PG.Exec(c.Request.Context(), `
 				INSERT INTO signaling_ips (ip_address, sip_proxy_node_id, status, auto_discovered)
-				SELECT $2::inet, $1, 'available', true
-				WHERE $2::inet IS DISTINCT FROM (SELECT host_ip FROM media_nodes WHERE id = $1)
+				VALUES ($2::inet, $1, 'available', true)
 				ON CONFLICT (ip_address) DO UPDATE
 				   SET sip_proxy_node_id = EXCLUDED.sip_proxy_node_id
 			`, nodeID, ip)
