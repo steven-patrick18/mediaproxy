@@ -1,21 +1,20 @@
-.PHONY: build run dev tidy fmt vet test migrate-up migrate-down migrate-status clean
+.PHONY: build run dev tidy fmt vet test migrate-up migrate-down migrate-status seed-admin clean
 
 GO        := /usr/local/go/bin/go
 BIN_DIR   := bin
-BIN_NAME  := baseapp
 LDFLAGS   := -ldflags="-s -w"
 
-# Load .env if present (so DATABASE_URL etc. are available to migrate)
 ifneq (,$(wildcard .env))
 include .env
 export
 endif
 
 build:
-	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(BIN_NAME) ./cmd/baseapp
+	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/baseapp ./cmd/baseapp
+	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/seedadmin ./cmd/seedadmin
 
 run: build
-	./$(BIN_DIR)/$(BIN_NAME)
+	./$(BIN_DIR)/baseapp
 
 dev:
 	$(GO) run ./cmd/baseapp
@@ -40,6 +39,12 @@ migrate-down:
 
 migrate-status:
 	migrate -path migrations -database "$$DATABASE_URL" version
+
+# Usage: make seed-admin EMAIL=admin@example.com PASS=longpassword
+seed-admin:
+	@test -n "$(EMAIL)" || (echo "EMAIL=... required"; exit 1)
+	@test -n "$(PASS)"  || (echo "PASS=... required"; exit 1)
+	$(GO) run ./cmd/seedadmin "$(EMAIL)" "$(PASS)"
 
 clean:
 	rm -rf $(BIN_DIR)

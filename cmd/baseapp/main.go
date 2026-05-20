@@ -46,7 +46,11 @@ func main() {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	srv := api.New(api.Deps{PG: pg, Redis: rdb})
+	srv := api.New(api.Deps{
+		PG:        pg,
+		Redis:     rdb,
+		JWTSecret: cfg.JWTSecret,
+	})
 
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPListen,

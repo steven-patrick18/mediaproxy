@@ -11,6 +11,7 @@ type Config struct {
 	DatabaseURL string
 	RedisAddr   string
 	HTTPListen  string
+	JWTSecret   string
 	LogLevel    slog.Level
 }
 
@@ -19,10 +20,15 @@ func Load() (Config, error) {
 	if dbURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
+	jwt := os.Getenv("JWT_SECRET")
+	if len(jwt) < 32 {
+		return Config{}, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
 	return Config{
 		DatabaseURL: dbURL,
 		RedisAddr:   getEnv("REDIS_ADDR", "127.0.0.1:6379"),
 		HTTPListen:  getEnv("HTTP_LISTEN", "127.0.0.1:8080"),
+		JWTSecret:   jwt,
 		LogLevel:    parseLevel(getEnv("LOG_LEVEL", "info")),
 	}, nil
 }

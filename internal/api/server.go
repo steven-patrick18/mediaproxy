@@ -7,8 +7,9 @@ import (
 )
 
 type Deps struct {
-	PG    *pgxpool.Pool
-	Redis *redis.Client
+	PG        *pgxpool.Pool
+	Redis     *redis.Client
+	JWTSecret string
 }
 
 type Server struct {
@@ -30,8 +31,15 @@ func (s *Server) Router() *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	{
-		v1.GET("/resellers", s.listResellers)
-		v1.GET("/clients", s.listClients)
+		// Public
+		v1.POST("/auth/login", s.login)
+
+		// Authed
+		authed := v1.Group("")
+		authed.Use(requireAuth(s.deps.JWTSecret))
+		authed.GET("/auth/me", s.me)
+		authed.GET("/resellers", s.listResellers)
+		authed.GET("/clients", s.listClients)
 	}
 	return r
 }

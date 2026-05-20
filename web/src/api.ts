@@ -1,0 +1,69 @@
+const TOKEN_KEY = "mp.token";
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(t: string | null) {
+  if (t === null) localStorage.removeItem(TOKEN_KEY);
+  else localStorage.setItem(TOKEN_KEY, t);
+}
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const tok = getToken();
+  if (tok) headers["Authorization"] = `Bearer ${tok}`;
+
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    const msg = (data && (data.error || data.message)) || res.statusText;
+    throw new ApiError(res.status, msg);
+  }
+  return data as T;
+}
+
+export const api = {
+  get: <T>(path: string) => request<T>("GET", path),
+  post: <T>(path: string, body: unknown) => request<T>("POST", path, body),
+};
+
+export interface User {
+  id: number;
+  email: string;
+  role: string;
+}
+export interface LoginResponse {
+  token: string;
+  user: User;
+  exp_at: number;
+}
+export interface Reseller {
+  id: number;
+  name: string;
+  status: string;
+  created_at: string;
+}
+export interface Client {
+  id: number;
+  reseller_id: number;
+  name: string;
+  status: string;
+  created_at: string;
+}
