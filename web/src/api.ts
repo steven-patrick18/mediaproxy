@@ -258,6 +258,35 @@ export interface Assignment {
   assigned_by?: number | null;
   assigned_at: string;
 }
+export interface FirewallRule {
+  id: number;
+  name: string;
+  action: "allow" | "block" | "rate_limit";
+  source_cidr?: string | null;
+  dest_port_low?: number | null;
+  dest_port_high?: number | null;
+  proto: "any" | "tcp" | "udp";
+  node_id?: number | null;
+  rate_per_second?: number | null;
+  priority: number;
+  enabled: boolean;
+  notes?: string | null;
+  created_at: string;
+}
+export interface FirewallAutoRule {
+  Kind: "carrier" | "client_dialer";
+  Name: string;
+  CIDR: string;
+}
+export interface FirewallPreview {
+  node_id: number;
+  node_name: string;
+  role: "media" | "sip_proxy";
+  auto_rules: FirewallAutoRule[];
+  applied_rules: FirewallRule[];
+  nft_config: string;
+}
+
 export interface AuditEntry {
   id: number;
   actor_id?: number | null;

@@ -132,6 +132,13 @@ func (s *Server) Router() *gin.Engine {
 		a.PATCH("/admin-users/:id", s.patchAdminUser)
 		a.DELETE("/admin-users/:id", s.deleteAdminUser)
 
+		// Firewall (panel-managed; preview only — no auto-apply yet)
+		a.GET("/firewall/rules", s.listFirewallRules)
+		a.POST("/firewall/rules", s.createFirewallRule)
+		a.PATCH("/firewall/rules/:id", s.patchFirewallRule)
+		a.DELETE("/firewall/rules/:id", s.deleteFirewallRule)
+		a.GET("/firewall/preview/:id", s.firewallPreview)
+
 		// Audit log
 		a.GET("/audit", s.listAudit)
 	}
