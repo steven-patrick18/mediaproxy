@@ -15,6 +15,7 @@ export default function IPPool() {
     lease_block: "",
     monthly_cost: "",
     rdns: "",
+    max_calls: 0,
   });
   const [busy, setBusy] = useState(false);
 
@@ -45,6 +46,7 @@ export default function IPPool() {
       lease_block: ip.lease_block ?? "",
       monthly_cost: ip.monthly_cost != null ? String(ip.monthly_cost) : "",
       rdns: ip.rdns ?? "",
+      max_calls: ip.max_calls ?? 0,
     });
     setEditing(ip);
   }
@@ -53,7 +55,7 @@ export default function IPPool() {
     setErr(null);
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { status: form.status };
+      const body: Record<string, unknown> = { status: form.status, max_calls: form.max_calls };
       if (form.purchased_from) body.purchased_from = form.purchased_from;
       if (form.lease_block) body.lease_block = form.lease_block;
       if (form.monthly_cost) body.monthly_cost = Number(form.monthly_cost);
@@ -122,7 +124,7 @@ export default function IPPool() {
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2">Lease</th>
               <th className="px-4 py-2">Source</th>
-              <th className="px-4 py-2">Calls</th>
+              <th className="px-4 py-2">Calls / cap</th>
               <th className="px-4 py-2 text-right">Actions</th>
             </tr>
           </thead>
@@ -155,7 +157,12 @@ export default function IPPool() {
                     <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">manual</span>
                   )}
                 </td>
-                <td className="px-4 py-2 text-slate-600">{r.current_calls}</td>
+                <td className="px-4 py-2 text-slate-600">
+                  {r.current_calls}{" "}
+                  <span className="text-xs text-slate-400">
+                    / {r.max_calls ? r.max_calls : "∞"}
+                  </span>
+                </td>
                 <td className="px-4 py-2">
                   <div className="flex justify-end gap-1">
                     <button onClick={() => openEdit(r)} title="Edit metadata" className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-brand-600">
@@ -211,6 +218,21 @@ export default function IPPool() {
             <div>
               <label className="block text-xs font-medium text-slate-500">rDNS</label>
               <input value={form.rdns} onChange={(e) => setForm({ ...form, rdns: e.target.value })} placeholder="ip1.example.com" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-slate-500">
+                Max concurrent calls (0 = unlimited, use node max)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={form.max_calls}
+                onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                Rotation strategies will skip this IP once <code>current_calls</code> reaches the cap.
+              </p>
             </div>
           </div>
         </div>

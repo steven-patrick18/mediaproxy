@@ -31,6 +31,7 @@ func (s *Server) Router() *gin.Engine {
 
 	r.GET("/healthz", s.healthz)
 	r.GET("/readyz", s.readyz)
+	r.GET("/agent-binary", s.serveAgentBinary)
 
 	agent := r.Group("/api/v1/agent")
 	agent.Use(requireAgentAuth(s.deps.PG))
@@ -76,6 +77,9 @@ func (s *Server) Router() *gin.Engine {
 		a.POST("/nodes/:id/drain", s.drainNode)
 		a.POST("/nodes/:id/undrain", s.undrainNode)
 		a.GET("/nodes/:id/metrics", s.nodeMetrics)
+		a.POST("/nodes/:id/provision", s.provisionNode)
+		a.GET("/nodes/:id/commands", s.listNodeCommands)
+		a.POST("/nodes/:id/commands", s.createNodeCommand)
 
 		// IP pool
 		a.GET("/node-ips", s.listNodeIPs)

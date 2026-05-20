@@ -8,6 +8,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// serveAgentBinary streams the node-agent linux/amd64 binary. The binary
+// is just a Go program; it's harmless without a matching agent_token, so
+// this endpoint doesn't require auth.
+func (s *Server) serveAgentBinary(c *gin.Context) {
+	const path = "/opt/mediaproxy/bin/node-agent"
+	c.Header("Content-Disposition", `attachment; filename="node-agent"`)
+	c.Header("Content-Type", "application/octet-stream")
+	c.File(path)
+}
+
 func (s *Server) healthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS node_commands;
+ALTER TABLE node_ips DROP COLUMN IF EXISTS max_calls;
+COMMIT;

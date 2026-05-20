@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -170,7 +172,46 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, agentHeartbeatResponse{ExpectedIPs: expected, Commands: []agentCommand{}})
+
+	// Pull any queued commands for this node and flip them to 'sent'.
+	commands := []agentCommand{}
+	if rows, err := s.deps.PG.Query(c.Request.Context(), `
+		UPDATE node_commands
+		   SET status = 'sent', sent_at = now()
+		 WHERE id IN (
+		   SELECT id FROM node_commands
+		    WHERE node_id = $1 AND status = 'queued'
+		    ORDER BY id LIMIT 20
+		 )
+		 RETURNING id, type, payload::text
+	`, nodeID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				cid     int64
+				ctype   string
+				payload string
+			)
+			if err := rows.Scan(&cid, &ctype, &payload); err != nil {
+				continue
+			}
+			cmd := agentCommand{ID: strconv.FormatInt(cid, 10), Type: ctype}
+			if payload != "" && payload != "{}" {
+				var p struct {
+					IP    string `json:"ip"`
+					CIDR  int    `json:"cidr"`
+					Iface string `json:"iface"`
+				}
+				_ = json.Unmarshal([]byte(payload), &p)
+				cmd.IP = p.IP
+				cmd.CIDR = p.CIDR
+				cmd.Iface = p.Iface
+			}
+			commands = append(commands, cmd)
+		}
+	}
+
+	c.JSON(http.StatusOK, agentHeartbeatResponse{ExpectedIPs: expected, Commands: commands})
 }
 
 type agentCommandResultRequest struct {
@@ -180,11 +221,26 @@ type agentCommandResultRequest struct {
 }
 
 func (s *Server) agentCommandResult(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
 	var req agentCommandResultRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	cmdID, err := strconv.ParseInt(req.CommandID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad command_id"})
+		return
+	}
+	finalStatus := "done"
+	if req.Status == "error" {
+		finalStatus = "error"
+	}
+	_, _ = s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE node_commands
+		   SET status = $3, detail = NULLIF($4, ''), completed_at = now()
+		 WHERE id = $1 AND node_id = $2
+	`, cmdID, nodeID, finalStatus, req.Detail)
 	c.Status(http.StatusNoContent)
 }
 

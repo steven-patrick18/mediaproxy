@@ -165,8 +165,22 @@ export interface NodeIP {
   rdns?: string | null;
   reputation_score?: number | null;
   current_calls: number;
+  max_calls?: number;
   auto_discovered?: boolean;
   created_at: string;
+}
+export interface ProvisionResult {
+  ok: boolean;
+  log: string;
+}
+export interface NodeCommandRow {
+  id: number;
+  node_id: number;
+  type: string;
+  status: "queued" | "sent" | "done" | "error";
+  detail?: string | null;
+  created_at: string;
+  completed_at?: string | null;
 }
 export interface SignalingIP {
   id: number;

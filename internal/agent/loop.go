@@ -174,7 +174,7 @@ func persistAndServices(cfg *Config, expected []string) {
 }
 
 func (a *Agent) runCommand(ctx context.Context, cmd Command) {
-	if a.Cfg.ReadOnly {
+	if a.Cfg.ReadOnly && cmd.Type != "apply" {
 		_ = a.API.AckCommand(ctx, CommandResult{CommandID: cmd.ID, Status: "error", Detail: "agent is read-only"})
 		return
 	}
@@ -196,8 +196,31 @@ func (a *Agent) runCommand(ctx context.Context, cmd Command) {
 				status, detail = "error", err.Error()
 			}
 		}
+	case "apply":
+		// Trigger an immediate reconcile against the latest expected set.
+		// We don't have the set here — the next reconcile call in the
+		// next heartbeat tick will pick it up. For now just nudge.
+		slog.Info("apply requested — will reconcile on this tick")
+		detail = "reconcile scheduled"
+	case "restart_rtpengine":
+		if err := systemctlAction("rtpengine", "restart"); err != nil {
+			status, detail = "error", err.Error()
+		}
+	case "restart_kamailio":
+		if err := systemctlAction("kamailio", "restart"); err != nil {
+			status, detail = "error", err.Error()
+		}
+	case "reboot":
+		// Ack first, then reboot in a goroutine so the response reaches the
+		// control plane before the network goes down.
+		_ = a.API.AckCommand(ctx, CommandResult{CommandID: cmd.ID, Status: "ok", Detail: "rebooting"})
+		go func() {
+			time.Sleep(2 * time.Second)
+			_ = systemctlAction("", "reboot")
+		}()
+		return
 	default:
-		status, detail = "error", "unsupported command type: "+cmd.Type
+		status, detail = "error", "unsupported command type: " + cmd.Type
 	}
 	_ = a.API.AckCommand(ctx, CommandResult{CommandID: cmd.ID, Status: status, Detail: detail})
 }
