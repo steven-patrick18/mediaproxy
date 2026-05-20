@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type MediaNode, type NodeIP } from "../api";
 import Modal from "../components/Modal";
+import Help from "../components/Help";
 import { PencilIcon, TrashIcon, RefreshIcon } from "../components/Icons";
 
 export default function IPPool() {
@@ -194,7 +195,15 @@ export default function IPPool() {
       >
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500">Status</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Status
+              <Help>
+                <strong>active</strong> — eligible for rotation.
+                <br /><strong>reserve</strong> — held back, brought in if active pool gets thin.
+                <br /><strong>flagged</strong> — bad reputation (Spamhaus / low ASR); skipped automatically.
+                <br /><strong>disabled</strong> — admin-locked; never used.
+              </Help>
+            </label>
             <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as NodeIP["status"] })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
               <option value="active">active</option>
               <option value="reserve">reserve</option>
@@ -222,6 +231,13 @@ export default function IPPool() {
             <div className="col-span-2">
               <label className="block text-xs font-medium text-slate-500">
                 Max concurrent calls (0 = unlimited, use node max)
+                <Help>
+                  Hard cap on how many calls this individual IP can carry at once.
+                  When <code>current_calls</code> reaches the cap, rotation strategies
+                  skip this IP and try another from the same group. Useful for paid IPs
+                  with strict per-IP limits or for spreading load evenly. <code>0</code>
+                  means "no per-IP limit; let the node cap kick in instead".
+                </Help>
               </label>
               <input
                 type="number"

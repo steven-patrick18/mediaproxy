@@ -3,6 +3,7 @@ import { api, type MediaNode, type MetricPoint, type ProvisionResult } from "../
 import Bar from "../components/Bar";
 import Spark from "../components/Spark";
 import Modal from "../components/Modal";
+import Help from "../components/Help";
 import { PlusIcon, RefreshIcon } from "../components/Icons";
 
 function pct(num: number | null | undefined, max: number) {
@@ -425,11 +426,25 @@ export default function Nodes() {
           <form onSubmit={submit} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-500">Name</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  Name
+                  <Help>Display name only — anything that helps you identify the host ("media-us-east-1", "kamailio-ny", etc.).</Help>
+                </label>
                 <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="media-node-1" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500">Role</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  Role
+                  <Help>
+                    <p className="mb-1 font-medium">media</p>
+                    Runs RTPEngine. Carries the actual RTP audio packets between dialer
+                    and carrier; rotates the media IP per call from the IP Pool.
+                    <p className="mb-1 mt-2 font-medium">sip_proxy</p>
+                    Runs Kamailio. Handles SIP signaling — receives INVITEs from dialers,
+                    looks up the right carrier, applies per-client signaling IP, forwards.
+                    A single node can't be both; create separate nodes per role.
+                  </Help>
+                </label>
                 <select
                   value={form.role}
                   onChange={(e) => {
@@ -445,15 +460,33 @@ export default function Nodes() {
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="block text-xs font-medium text-slate-500">Host IP</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  Host IP
+                  <Help>
+                    The management / SSH IP of the remote VPS. Used by the panel to reach
+                    the agent (and SSH-install it). The agent's auto-discovered IPs include
+                    this one — you can disable it via the Signaling IPs / IP Pool page if
+                    you don't want it used for SIP/media.
+                  </Help>
+                </label>
                 <input required value={form.host_ip} onChange={(e) => setForm({ ...form, host_ip: e.target.value })} placeholder="45.77.156.60" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500">Region</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  Region
+                  <Help>Free-text geographic tag — "us-east", "ams1", "in-mumbai". Shown on the node card and used later for region-aware routing.</Help>
+                </label>
                 <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500">NIC speed (Gbps)</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  NIC speed (Gbps)
+                  <Help>
+                    The node's physical NIC capacity. Used as the denominator on the
+                    Network bar of the node card so utilization shows correctly. 1 Gbps
+                    is the default for cloud-VPS plans; 10 Gbps for dedicated boxes.
+                  </Help>
+                </label>
                 <select value={form.nic_gbps} onChange={(e) => setForm({ ...form, nic_gbps: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
                   <option value={1}>1 Gbps</option>
                   <option value={2}>2 Gbps</option>

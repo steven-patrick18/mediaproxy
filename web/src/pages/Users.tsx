@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type AdminUserRow } from "../api";
 import { useAuth } from "../auth";
 import Modal from "../components/Modal";
+import Help from "../components/Help";
 import { PencilIcon, PlusIcon, TrashIcon } from "../components/Icons";
 
 const roles: Array<AdminUserRow["role"]> = ["admin", "noc", "reseller", "viewer"];
@@ -159,7 +160,15 @@ export default function Users() {
             <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500">Role</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Role
+              <Help>
+                <strong>admin</strong> — full control over everything including admin users.
+                <br /><strong>noc</strong> — operations: drain/flag/restart nodes, view all data, but cannot create/delete admin users or change billing.
+                <br /><strong>reseller</strong> — tenant-scoped view (their own clients/CDRs only; UI scoping enforced when wired).
+                <br /><strong>viewer</strong> — read-only across the panel.
+              </Help>
+            </label>
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as AdminUserRow["role"] })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
               {roles.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>

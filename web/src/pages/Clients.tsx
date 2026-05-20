@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Client, type Reseller, type SignalingIP } from "../api";
 import Modal from "../components/Modal";
+import Help from "../components/Help";
 import { PencilIcon, PlusIcon, TrashIcon } from "../components/Icons";
 
 export default function Clients() {
@@ -178,7 +179,14 @@ export default function Clients() {
       >
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500">Reseller</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Reseller
+              <Help>
+                The top-level tenant that owns this client. Resellers can be billed
+                separately and have their own clients. If you sell directly to end
+                customers, put them all under one "Default" reseller.
+              </Help>
+            </label>
             <select
               value={form.reseller_id}
               onChange={(e) => setForm({ ...form, reseller_id: Number(e.target.value) })}
@@ -189,7 +197,10 @@ export default function Clients() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500">Name</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Name
+              <Help>End-customer name. Shown on CDRs, the live-calls list, etc.</Help>
+            </label>
             <input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -199,7 +210,15 @@ export default function Clients() {
           {editing && (
             <>
               <div>
-                <label className="block text-xs font-medium text-slate-500">Status</label>
+                <label className="block text-xs font-medium text-slate-500">
+                  Status
+                  <Help>
+                    <strong>active</strong> — calls flow normally.
+                    <br /><strong>suspended</strong> — Kamailio returns 403 to this client's
+                    dialer IPs; signaling-IP cache is purged. Restore later by flipping back to active.
+                    <br /><strong>deleted</strong> — soft-delete marker; kept for audit/CDR history.
+                  </Help>
+                </label>
                 <select
                   value={form.status}
                   onChange={(e) => setForm({ ...form, status: e.target.value })}

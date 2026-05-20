@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Carrier, type Client, type Route } from "../api";
+import Help from "../components/Help";
 
 export default function Routes() {
   const [rows, setRows] = useState<Route[]>([]);
@@ -93,25 +94,65 @@ export default function Routes() {
       {showForm && (
         <form onSubmit={submit} className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-4">
           <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">Client</label>
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+              Client
+              <Help>
+                Which tenant this route belongs to. Calls coming from this client's
+                whitelisted dialer IPs will be matched against this route.
+              </Help>
+            </label>
             <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
               <option value={0}>— select —</option>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">Carrier</label>
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+              Carrier
+              <Help>
+                Upstream SIP destination calls matching this route are sent to.
+                Configure carriers under <strong>Routing → Carriers</strong> first.
+                Each carrier maps to one or more media nodes that will carry the RTP.
+              </Help>
+            </label>
             <select required value={form.carrier_id} onChange={(e) => setForm({ ...form, carrier_id: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
               <option value={0}>— select —</option>
               {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">Prefix (E.164)</label>
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+              Prefix (E.164)
+              <Help>
+                <p className="mb-1 font-medium">Longest-prefix match on the dialed number.</p>
+                Leave blank to match every number this client dials. Otherwise enter the
+                leading digits in E.164 (no <code>+</code>):
+                <ul className="ml-4 mt-1 list-disc">
+                  <li><code>1</code> — all US/CA numbers</li>
+                  <li><code>1212</code> — only New York</li>
+                  <li><code>44</code> — all UK</li>
+                  <li><code>800</code> — toll-free</li>
+                </ul>
+                Multiple routes can share a client; the longest matching prefix wins.
+              </Help>
+            </label>
             <input value={form.match_prefix} onChange={(e) => setForm({ ...form, match_prefix: e.target.value })} placeholder="1, 1212, 44" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm font-mono" />
           </div>
           <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">Priority</label>
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+              Priority
+              <Help>
+                <p className="mb-1 font-medium">Lower number = tried first.</p>
+                When multiple routes match the dialed number for this client, they're
+                tried in ascending priority order. If a carrier returns 503/486/no-answer,
+                the next priority is tried.
+                <div className="mt-2 rounded bg-slate-50 p-2 font-mono text-[11px]">
+                  Alfa · 1 → CarrierA · priority 100  ← primary<br/>
+                  Alfa · 1 → CarrierB · priority 200  ← failover
+                </div>
+                Default <code>100</code> is fine for single-carrier setups.
+              </Help>
+            </label>
             <input type="number" value={form.priority} onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
           </div>
           <div className="sm:col-span-4">

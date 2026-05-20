@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Client, type MediaNode, type SignalingIP } from "../api";
+import Help from "../components/Help";
 
 export default function SignalingIPs() {
   const [rows, setRows] = useState<SignalingIP[]>([]);
@@ -100,6 +101,12 @@ export default function SignalingIPs() {
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
               IP address
+              <Help>
+                The IPv4 address the SIP proxy will use as the source for outbound INVITEs
+                on behalf of this client. The carrier whitelists this IP on their side.
+                Must already be bound on the sip_proxy node's NIC (or the next agent
+                heartbeat will auto-add it if you've configured it at the OS / cloud-provider level).
+              </Help>
             </label>
             <input
               required
@@ -112,6 +119,7 @@ export default function SignalingIPs() {
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
               SIP proxy node
+              <Help>Which sip_proxy node owns this signaling IP — Kamailio on that node listens on this IP.</Help>
             </label>
             <select
               required

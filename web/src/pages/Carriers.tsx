@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Carrier, type CarrierHistoryEntry, type MediaNode } from "../api";
 import Modal from "../components/Modal";
+import Help from "../components/Help";
 import { PencilIcon, PlusIcon, TrashIcon } from "../components/Icons";
 
 const blankForm = {
@@ -224,19 +225,42 @@ export default function Carriers() {
       >
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500">Name</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Name
+              <Help>Display name only. Anything that's meaningful to you ("Telnyx-DE", "Twilio-prod", etc.).</Help>
+            </label>
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500">Host</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Host
+              <Help>
+                The carrier's SIP endpoint — hostname or IP. Kamailio will send INVITEs here.
+                For carriers with multiple IPs, use the hostname they give you so they can
+                load-balance behind their own A-records.
+              </Help>
+            </label>
             <input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="sip.carrier.com" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500">Port</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Port
+              <Help>SIP signaling port on the carrier side. <strong>5060</strong> for UDP/TCP, <strong>5061</strong> for TLS.</Help>
+            </label>
             <input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500">Transport</label>
+            <label className="block text-xs font-medium text-slate-500">
+              Transport
+              <Help>
+                Wire protocol for SIP signaling.
+                <ul className="ml-4 mt-1 list-disc">
+                  <li><code>udp</code> — most common, lowest latency</li>
+                  <li><code>tcp</code> — preferred for large messages (lots of routing headers)</li>
+                  <li><code>tls</code> — encrypted; required by some carriers</li>
+                </ul>
+              </Help>
+            </label>
             <select value={form.transport} onChange={(e) => setForm({ ...form, transport: e.target.value as "udp" | "tcp" | "tls" })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
               <option value="udp">udp</option>
               <option value="tcp">tcp</option>
@@ -246,6 +270,13 @@ export default function Carriers() {
           <div className="col-span-2">
             <label className="block text-xs font-medium text-slate-500">
               Media nodes ({form.assigned_node_ids.length} selected)
+              <Help>
+                Which media nodes carry the RTP for calls to this carrier. Pick one or
+                multiple — rotation strategies (set on the Assignment) decide which active
+                node handles a given call, and if one is full or offline the next is used.
+                You can change this set later from this dialog; every change is recorded
+                in this carrier's history.
+              </Help>
             </label>
             <p className="mt-1 text-xs text-slate-500">
               Routing will pick any active node when placing a call to this carrier. Selecting
