@@ -8,7 +8,7 @@ const blankForm = {
   host: "",
   port: 5060,
   transport: "udp" as "udp" | "tcp" | "tls",
-  assigned_node_id: 0,
+  assigned_node_ids: [] as number[],
   codec_pref: "",
   status: "active",
   notes: "",
@@ -54,12 +54,23 @@ export default function Carriers() {
       host: c.host,
       port: c.port,
       transport: c.transport,
-      assigned_node_id: c.assigned_node_id ?? 0,
+      assigned_node_ids: [...c.assigned_node_ids],
       codec_pref: c.codec_pref ?? "",
       status: c.status,
-      notes: (c as Carrier & { notes?: string }).notes ?? "",
+      notes: c.notes ?? "",
     });
     setEditing(c);
+  }
+  function toggleNode(id: number) {
+    setForm((f) => {
+      const has = f.assigned_node_ids.includes(id);
+      return {
+        ...f,
+        assigned_node_ids: has
+          ? f.assigned_node_ids.filter((x) => x !== id)
+          : [...f.assigned_node_ids, id],
+      };
+    });
   }
 
   async function save() {
@@ -67,6 +78,9 @@ export default function Carriers() {
     setBusy(true);
     try {
       if (editing) {
+        const sortedOld = [...editing.assigned_node_ids].sort((a, b) => a - b).join(",");
+        const sortedNew = [...form.assigned_node_ids].sort((a, b) => a - b).join(",");
+        const nodesChanged = sortedOld !== sortedNew;
         const body: Record<string, unknown> = {
           name: form.name,
           host: form.host,
@@ -76,16 +90,25 @@ export default function Carriers() {
           status: form.status,
           notes: form.notes,
         };
-        if (form.assigned_node_id !== (editing.assigned_node_id ?? 0)) {
-          body.assigned_node_id = form.assigned_node_id || undefined;
-          body.reason = prompt("Reason for reassigning the node?") ?? "manual edit";
+        if (nodesChanged) {
+          body.assigned_node_ids = form.assigned_node_ids;
+          const r = prompt("Reason for changing this carrier's media nodes?");
+          if (r === null) {
+            setBusy(false);
+            return;
+          }
+          body.reason = r || "manual edit";
         }
         await api.patch(`/api/v1/carriers/${editing.id}`, body);
       } else {
         await api.post("/api/v1/carriers", {
-          ...form,
-          assigned_node_id: form.assigned_node_id || undefined,
+          name: form.name,
+          host: form.host,
+          port: form.port,
+          transport: form.transport,
+          assigned_node_ids: form.assigned_node_ids,
           codec_pref: form.codec_pref || undefined,
+          notes: form.notes || undefined,
         });
       }
       setCreating(false);
@@ -121,7 +144,10 @@ export default function Carriers() {
       <header className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold tracking-tight text-slate-800">Carriers</h2>
-          <p className="text-xs text-slate-500">Upstream termination providers. Each maps to one media node at a time.</p>
+          <p className="text-xs text-slate-500">
+            Upstream termination providers. Each can be served by multiple media nodes — pick a set
+            in the carrier's edit dialog.
+          </p>
         </div>
         <button onClick={openCreate} className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-brand-700">
           <PlusIcon /> Add carrier
@@ -137,7 +163,7 @@ export default function Carriers() {
               <th className="px-4 py-2">ID</th>
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Endpoint</th>
-              <th className="px-4 py-2">Node</th>
+              <th className="px-4 py-2">Media nodes</th>
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2 text-right">Actions</th>
             </tr>
@@ -151,7 +177,19 @@ export default function Carriers() {
                 <td className="px-4 py-2 font-mono text-slate-500">{r.id}</td>
                 <td className="px-4 py-2 font-medium">{r.name}</td>
                 <td className="px-4 py-2 font-mono text-xs">{r.transport}://{r.host}:{r.port}</td>
-                <td className="px-4 py-2">{nodeName(r.assigned_node_id)}</td>
+                <td className="px-4 py-2 text-xs">
+                  {r.assigned_node_ids.length === 0 ? (
+                    <span className="text-slate-400">— none —</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {r.assigned_node_ids.map((id) => (
+                        <span key={id} className="rounded bg-brand-50 px-1.5 py-0.5 text-brand-700">
+                          {nodeName(id)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </td>
                 <td className="px-4 py-2">{r.status}</td>
                 <td className="px-4 py-2">
                   <div className="flex justify-end gap-1">
@@ -173,7 +211,7 @@ export default function Carriers() {
       <Modal
         open={creating || editing !== null}
         title={editing ? `Edit carrier #${editing.id}` : "Add carrier"}
-        width="max-w-lg"
+        width="max-w-2xl"
         onClose={() => { setCreating(false); setEditing(null); }}
         footer={
           <>
@@ -205,19 +243,45 @@ export default function Carriers() {
               <option value="tls">tls</option>
             </select>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500">Media node</label>
-            <select value={form.assigned_node_id} onChange={(e) => setForm({ ...form, assigned_node_id: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
-              <option value={0}>— none —</option>
-              {mediaNodes.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
-            </select>
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-slate-500">
+              Media nodes ({form.assigned_node_ids.length} selected)
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              Routing will pick any active node when placing a call to this carrier. Selecting
+              multiple gives you failover.
+            </p>
+            <div className="mt-2 max-h-40 overflow-auto rounded border border-slate-300 p-2 text-sm">
+              {mediaNodes.length === 0 && (
+                <p className="text-slate-400">No media nodes yet — add one in Infrastructure → Nodes first.</p>
+              )}
+              {mediaNodes.map((n) => (
+                <label key={n.id} className="flex items-center gap-2 py-1">
+                  <input
+                    type="checkbox"
+                    checked={form.assigned_node_ids.includes(n.id)}
+                    onChange={() => toggleNode(n.id)}
+                  />
+                  <span className="font-medium">{n.name}</span>
+                  <span className="text-xs text-slate-500">{n.host_ip}{n.region ? " · " + n.region : ""}</span>
+                  <span
+                    className={
+                      "ml-auto rounded px-2 py-0.5 text-xs " +
+                      (n.status === "online" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700")
+                    }
+                  >
+                    {n.status}
+                  </span>
+                </label>
+              ))}
+            </div>
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500">Codec pref</label>
             <input value={form.codec_pref} onChange={(e) => setForm({ ...form, codec_pref: e.target.value })} placeholder="g711a,g711u" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
           </div>
           {editing && (
-            <div className="col-span-2">
+            <div>
               <label className="block text-xs font-medium text-slate-500">Status</label>
               <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
                 <option value="active">active</option>
@@ -241,15 +305,21 @@ export default function Carriers() {
       >
         <ul className="divide-y divide-slate-100">
           {history.length === 0 && <li className="py-3 text-center text-slate-400">No changes.</li>}
-          {history.map((h) => (
-            <li key={h.id} className="flex items-baseline justify-between py-2 text-sm">
-              <span>
-                <code className="text-xs text-slate-500">{new Date(h.changed_at).toLocaleString()}</code>{" "}
-                {nodeName(h.old_node_id)} → <strong>{nodeName(h.new_node_id)}</strong>
-              </span>
-              <span className="text-xs text-slate-500">{h.reason ?? ""}</span>
-            </li>
-          ))}
+          {history.map((h) => {
+            const isAdd = !h.old_node_id && h.new_node_id;
+            const isRemove = h.old_node_id && !h.new_node_id;
+            return (
+              <li key={h.id} className="flex items-baseline justify-between py-2 text-sm">
+                <span>
+                  <code className="text-xs text-slate-500">{new Date(h.changed_at).toLocaleString()}</code>{" "}
+                  {isAdd && (<><span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-800">added</span> {nodeName(h.new_node_id)}</>)}
+                  {isRemove && (<><span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800">removed</span> {nodeName(h.old_node_id)}</>)}
+                  {!isAdd && !isRemove && (<>{nodeName(h.old_node_id)} → <strong>{nodeName(h.new_node_id)}</strong></>)}
+                </span>
+                <span className="text-xs text-slate-500">{h.reason ?? ""}</span>
+              </li>
+            );
+          })}
         </ul>
       </Modal>
     </div>

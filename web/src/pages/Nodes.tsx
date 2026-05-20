@@ -55,7 +55,8 @@ function NodeCard({
   const ram = Number(n.ram_pct ?? 0);
   const netIn = Number(n.net_in_mbps ?? 0);
   const netOut = Number(n.net_out_mbps ?? 0);
-  const nicMbps = (n.role === "media" ? 10000 : 1000);
+  const nicGbps = n.nic_gbps && n.nic_gbps > 0 ? n.nic_gbps : 1; // default 1 Gbps
+  const nicMbps = nicGbps * 1000;
   const netPct = pct(netIn + netOut, nicMbps);
   const neverSeen = !n.last_seen_at;
 
@@ -121,7 +122,7 @@ function NodeCard({
         <Bar label="Active calls" pct={pct(calls, n.max_calls || 1)} value={`${calls} / ${n.max_calls || "—"}`} tone="info" />
         <Bar label="CPU" pct={cpu} value={`${cpu.toFixed(1)}%`} />
         <Bar label="RAM" pct={ram} value={`${ram.toFixed(1)}%`} />
-        <Bar label="Network in+out" pct={netPct} value={`${netIn.toFixed(1)} ↓ / ${netOut.toFixed(1)} ↑ Mbps`} />
+        <Bar label={`Network (${nicGbps} Gbps NIC)`} pct={netPct} value={`${netIn.toFixed(1)} ↓ / ${netOut.toFixed(1)} ↑ Mbps`} />
         <Bar label="IPs bound" pct={pct(n.ips_bound, n.ips_total || 1)} value={`${n.ips_bound} / ${n.ips_total}`} tone="info" />
       </div>
 
@@ -176,6 +177,7 @@ export default function Nodes() {
     role: "media" as "media" | "sip_proxy",
     host_ip: "",
     region: "",
+    nic_gbps: 1,
     max_calls: 2500,
     ssh_user: "root",
     ssh_port: 22,
@@ -238,6 +240,7 @@ export default function Nodes() {
         role: form.role,
         host_ip: form.host_ip,
         region: form.region,
+        nic_gbps: form.nic_gbps,
         max_calls: form.max_calls,
       });
       setCreated(node);
@@ -265,6 +268,7 @@ export default function Nodes() {
         role: "media",
         host_ip: "",
         region: "",
+        nic_gbps: 1,
         max_calls: 2500,
         ssh_user: "root",
         ssh_port: 22,
@@ -435,7 +439,18 @@ export default function Nodes() {
                 <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-500">Max calls</label>
+                <label className="block text-xs font-medium text-slate-500">NIC speed (Gbps)</label>
+                <select value={form.nic_gbps} onChange={(e) => setForm({ ...form, nic_gbps: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
+                  <option value={1}>1 Gbps</option>
+                  <option value={2}>2 Gbps</option>
+                  <option value={5}>5 Gbps</option>
+                  <option value={10}>10 Gbps</option>
+                  <option value={25}>25 Gbps</option>
+                  <option value={40}>40 Gbps</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-slate-500">Max concurrent calls</label>
                 <input type="number" min={0} value={form.max_calls} onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
               </div>
             </div>

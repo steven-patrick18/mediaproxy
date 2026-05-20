@@ -128,6 +128,7 @@ export interface MediaNode {
   role: "media" | "sip_proxy";
   host_ip: string;
   region: string | null;
+  nic_gbps?: number | null;
   max_calls: number;
   transcoding_enabled: boolean;
   status: "online" | "offline" | "draining";
@@ -196,8 +197,9 @@ export interface Carrier {
   host: string;
   port: number;
   transport: "udp" | "tcp" | "tls";
-  assigned_node_id?: number | null;
+  assigned_node_ids: number[];
   codec_pref?: string | null;
+  notes?: string | null;
   status: "active" | "paused" | "disabled";
   created_at: string;
 }

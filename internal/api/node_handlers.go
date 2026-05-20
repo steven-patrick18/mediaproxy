@@ -20,6 +20,7 @@ type MediaNode struct {
 	Role               string     `json:"role"`
 	HostIP             string     `json:"host_ip"`
 	Region             *string    `json:"region,omitempty"`
+	NicGbps            *int       `json:"nic_gbps,omitempty"`
 	MaxCalls           int        `json:"max_calls"`
 	TranscodingEnabled bool       `json:"transcoding_enabled"`
 	Status             string     `json:"status"`
@@ -52,7 +53,7 @@ const nodeStatusExpr = `
 
 func (s *Server) listNodes(c *gin.Context) {
 	q := `
-		SELECT n.id, n.name, n.role, host(n.host_ip), n.region, n.max_calls,
+		SELECT n.id, n.name, n.role, host(n.host_ip), n.region, n.nic_gbps, n.max_calls,
 		       n.transcoding_enabled, ` + nodeStatusExpr + ` AS effective_status,
 		       n.last_seen_at, n.created_at,
 		       n.active_calls, n.cpu_pct, n.ram_pct,
@@ -73,7 +74,7 @@ func (s *Server) listNodes(c *gin.Context) {
 	out := []MediaNode{}
 	for rows.Next() {
 		var n MediaNode
-		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.HostIP, &n.Region,
+		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.HostIP, &n.Region, &n.NicGbps,
 			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
 			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
 			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal); err != nil {
@@ -90,6 +91,7 @@ type createNodeRequest struct {
 	Role               string `json:"role" binding:"required,oneof=media sip_proxy"`
 	HostIP             string `json:"host_ip" binding:"required,ip"`
 	Region             string `json:"region"`
+	NicGbps            int    `json:"nic_gbps" binding:"gte=0"`
 	MaxCalls           int    `json:"max_calls" binding:"gte=0"`
 	TranscodingEnabled bool   `json:"transcoding_enabled"`
 }
@@ -110,13 +112,17 @@ func (s *Server) createNode(c *gin.Context) {
 	if req.Region != "" {
 		region = &req.Region
 	}
+	var nicGbps *int
+	if req.NicGbps > 0 {
+		nicGbps = &req.NicGbps
+	}
 	err = s.deps.PG.QueryRow(c.Request.Context(), `
-		INSERT INTO media_nodes (name, role, host_ip, region, max_calls, transcoding_enabled, agent_token, status)
-		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, 'offline')
-		RETURNING id, name, role, host(host_ip), region, max_calls, transcoding_enabled,
+		INSERT INTO media_nodes (name, role, host_ip, region, nic_gbps, max_calls, transcoding_enabled, agent_token, status)
+		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, 'offline')
+		RETURNING id, name, role, host(host_ip), region, nic_gbps, max_calls, transcoding_enabled,
 		          status, agent_token, last_seen_at, created_at
-	`, req.Name, req.Role, req.HostIP, region, req.MaxCalls, req.TranscodingEnabled, token).Scan(
-		&node.ID, &node.Name, &node.Role, &node.HostIP, &node.Region,
+	`, req.Name, req.Role, req.HostIP, region, nicGbps, req.MaxCalls, req.TranscodingEnabled, token).Scan(
+		&node.ID, &node.Name, &node.Role, &node.HostIP, &node.Region, &node.NicGbps,
 		&node.MaxCalls, &node.TranscodingEnabled, &node.Status, &node.AgentToken,
 		&node.LastSeenAt, &node.CreatedAt,
 	)
@@ -134,6 +140,7 @@ func (s *Server) createNode(c *gin.Context) {
 type patchNodeRequest struct {
 	Name               *string `json:"name"`
 	Region             *string `json:"region"`
+	NicGbps            *int    `json:"nic_gbps"`
 	MaxCalls           *int    `json:"max_calls"`
 	TranscodingEnabled *bool   `json:"transcoding_enabled"`
 }
@@ -153,10 +160,11 @@ func (s *Server) patchNode(c *gin.Context) {
 		UPDATE media_nodes
 		   SET name                = COALESCE($2, name),
 		       region              = COALESCE($3, region),
-		       max_calls           = COALESCE($4, max_calls),
-		       transcoding_enabled = COALESCE($5, transcoding_enabled)
+		       nic_gbps            = COALESCE($4, nic_gbps),
+		       max_calls           = COALESCE($5, max_calls),
+		       transcoding_enabled = COALESCE($6, transcoding_enabled)
 		 WHERE id = $1
-	`, id, req.Name, req.Region, req.MaxCalls, req.TranscodingEnabled)
+	`, id, req.Name, req.Region, req.NicGbps, req.MaxCalls, req.TranscodingEnabled)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
