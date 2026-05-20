@@ -38,6 +38,7 @@ type MediaNode struct {
 	AgentVersion   *string  `json:"agent_version,omitempty"`
 	IPsBound       int      `json:"ips_bound"`
 	IPsTotal       int      `json:"ips_total"`
+	FirewallAppliedAt *time.Time `json:"firewall_applied_at,omitempty"`
 }
 
 // computedStatus flips a node to "offline" if last_seen_at is older than
@@ -61,7 +62,8 @@ func (s *Server) listNodes(c *gin.Context) {
 		       n.uptime_seconds, n.agent_version,
 		       COALESCE(n.ips_bound, 0),
 		       (SELECT count(*) FROM node_ips      WHERE node_id = n.id) +
-		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total
+		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total,
+		       n.firewall_applied_at
 		  FROM media_nodes n
 		 ORDER BY n.id
 	`
@@ -77,7 +79,7 @@ func (s *Server) listNodes(c *gin.Context) {
 		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.HostIP, &n.Region, &n.NicGbps,
 			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
 			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
-			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal); err != nil {
+			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal, &n.FirewallAppliedAt); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

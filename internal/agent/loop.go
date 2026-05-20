@@ -202,6 +202,13 @@ func (a *Agent) runCommand(ctx context.Context, cmd Command) {
 		// next heartbeat tick will pick it up. For now just nudge.
 		slog.Info("apply requested — will reconcile on this tick")
 		detail = "reconcile scheduled"
+	case "apply_firewall":
+		msg, err := a.applyFirewall(ctx)
+		if err != nil {
+			status, detail = "error", err.Error()
+		} else {
+			detail = msg
+		}
 	case "restart_rtpengine":
 		if err := systemctlAction("rtpengine", "restart"); err != nil {
 			status, detail = "error", err.Error()

@@ -39,6 +39,8 @@ func (s *Server) Router() *gin.Engine {
 		agent.POST("/register", s.agentRegister)
 		agent.POST("/heartbeat", s.agentHeartbeat)
 		agent.POST("/command-result", s.agentCommandResult)
+		agent.GET("/firewall", s.agentFirewallConfig)
+		agent.POST("/firewall-applied", s.agentFirewallApplied)
 	}
 
 	v1 := r.Group("/api/v1")

@@ -158,6 +158,7 @@ export interface MediaNode {
   agent_version?: string | null;
   ips_bound: number;
   ips_total: number;
+  firewall_applied_at?: string | null;
 }
 export interface MetricPoint {
   ts: string;

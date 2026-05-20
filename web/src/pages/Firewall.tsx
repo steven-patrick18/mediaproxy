@@ -181,6 +181,36 @@ export default function Firewall() {
     URL.revokeObjectURL(url);
   }
 
+  const [applyStatus, setApplyStatus] = useState<string | null>(null);
+  async function applyToNode(nodeID: number) {
+    if (!confirm(
+      "Apply firewall to this node?\n\n" +
+        "Safety: the agent saves a rollback, schedules an automatic revert in 2 minutes via 'at',\n" +
+        "applies the new rules, then confirms by calling back. If the new rules break connectivity,\n" +
+        "the revert runs automatically and restores the previous ruleset.\n\n" +
+        "Requires 'nftables' and 'at' packages on the node (the SSH provisioner installs them)."
+    )) return;
+    setApplyStatus("Queued apply_firewall for node…");
+    try {
+      await api.post(`/api/v1/nodes/${nodeID}/commands`, { type: "apply_firewall" });
+      setApplyStatus("Queued. The agent will pick it up on its next heartbeat (~10s). Check the node card for confirmation.");
+    } catch (e) {
+      setApplyStatus("Failed: " + (e instanceof Error ? e.message : "queue failed"));
+    }
+  }
+  async function applyToAll() {
+    if (!confirm("Apply firewall to ALL nodes? Each is independently rollback-protected.")) return;
+    setApplyStatus("Queueing apply_firewall for every node…");
+    try {
+      await Promise.all(nodes.map((n) =>
+        api.post(`/api/v1/nodes/${n.id}/commands`, { type: "apply_firewall" }),
+      ));
+      setApplyStatus(`Queued for ${nodes.length} node(s).`);
+    } catch (e) {
+      setApplyStatus("Failed: " + (e instanceof Error ? e.message : "queue failed"));
+    }
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex items-start justify-between">
@@ -303,8 +333,27 @@ export default function Firewall() {
             <button onClick={downloadNFT} disabled={!preview} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50">
               <DownloadIcon /> Download .nft
             </button>
+            <button
+              onClick={() => previewNode && applyToNode(previewNode)}
+              disabled={!previewNode}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+            >
+              Apply to this node
+            </button>
+            <button
+              onClick={applyToAll}
+              disabled={nodes.length === 0}
+              className="rounded-md border border-emerald-600 px-3 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+            >
+              Apply to all nodes
+            </button>
           </div>
         </div>
+        {applyStatus && (
+          <div className="mt-3 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+            {applyStatus}
+          </div>
+        )}
 
         {preview && (
           <>

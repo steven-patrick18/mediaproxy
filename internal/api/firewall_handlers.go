@@ -197,7 +197,10 @@ func (s *Server) firewallPreview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
 		return
 	}
+	s.renderFirewallPreviewFor(c, id)
+}
 
+func (s *Server) renderFirewallPreviewFor(c *gin.Context, id int64) {
 	// Load node
 	var (
 		nodeName string
@@ -288,6 +291,23 @@ func (s *Server) firewallPreview(c *gin.Context) {
 		Rules:     appliedRules,
 		NFTConfig: cfg,
 	})
+}
+
+// GET /api/v1/agent/firewall — agent-authenticated, returns the synthesized
+// nft config for the calling agent's node.
+func (s *Server) agentFirewallConfig(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
+	s.renderFirewallPreviewFor(c, nodeID)
+}
+
+// POST /api/v1/agent/firewall-applied — agent confirms it successfully
+// applied the ruleset; we just stamp the node row so the panel can show
+// "applied at <ts>".
+func (s *Server) agentFirewallApplied(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
+	_, _ = s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE media_nodes SET firewall_applied_at = now() WHERE id = $1`, nodeID)
+	c.Status(http.StatusNoContent)
 }
 
 // --- helpers ----------------------------------------------------------------

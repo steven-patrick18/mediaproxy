@@ -77,9 +77,18 @@ func Run(ctx context.Context, r Request) Result {
 
 	log("Preparing directories")
 	if err := run(client,
-		"mkdir -p /etc/node-agent /var/log/mediaproxy && touch /var/log/mediaproxy/agent.log",
+		"mkdir -p /etc/node-agent /var/log/mediaproxy /etc/mediaproxy && touch /var/log/mediaproxy/agent.log",
 		&b); err != nil {
 		return fail("mkdir: %v", err)
+	}
+
+	log("Installing nftables + at (firewall auto-apply needs these)")
+	if err := run(client,
+		"DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables at && systemctl enable --now atd",
+		&b); err != nil {
+		// Non-fatal — the agent and SIP service still work without these,
+		// just the firewall-apply command won't.
+		log("WARNING: apt install failed (continuing): %v", err)
 	}
 
 	log("Downloading agent binary from %s", r.BinaryURL)
