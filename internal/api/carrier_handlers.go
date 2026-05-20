@@ -107,6 +107,12 @@ func (s *Server) createCarrier(c *gin.Context) {
 }
 
 type updateCarrierRequest struct {
+	Name           *string `json:"name"`
+	Host           *string `json:"host"`
+	Port           *int    `json:"port"`
+	Transport      *string `json:"transport"`
+	CodecPref      *string `json:"codec_pref"`
+	Notes          *string `json:"notes"`
 	AssignedNodeID *int64  `json:"assigned_node_id"`
 	Reason         string  `json:"reason"`
 	Status         *string `json:"status"`
@@ -132,6 +138,31 @@ func (s *Server) patchCarrier(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback(c.Request.Context())
+
+	if req.Transport != nil {
+		switch *req.Transport {
+		case "udp", "tcp", "tls":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid transport"})
+			return
+		}
+	}
+	if req.Name != nil || req.Host != nil || req.Port != nil || req.Transport != nil ||
+		req.CodecPref != nil || req.Notes != nil {
+		if _, err := tx.Exec(c.Request.Context(), `
+			UPDATE carriers SET
+			   name       = COALESCE($2, name),
+			   host       = COALESCE($3, host),
+			   port       = COALESCE($4, port),
+			   transport  = COALESCE($5, transport),
+			   codec_pref = COALESCE($6, codec_pref),
+			   notes      = COALESCE($7, notes)
+			 WHERE id = $1
+		`, id, req.Name, req.Host, req.Port, req.Transport, req.CodecPref, req.Notes); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	if req.AssignedNodeID != nil {
 		var oldNode *int64

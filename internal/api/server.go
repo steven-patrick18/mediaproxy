@@ -46,17 +46,21 @@ func (s *Server) Router() *gin.Engine {
 
 		a := v1.Group("")
 		a.Use(requireAuth(s.deps.JWTSecret))
+		a.Use(auditMiddleware(s.deps.PG))
+
 		a.GET("/auth/me", s.me)
 
 		// Resellers
 		a.GET("/resellers", s.listResellers)
 		a.POST("/resellers", s.createReseller)
+		a.PATCH("/resellers/:id", s.patchReseller)
 		a.DELETE("/resellers/:id", s.deleteReseller)
 
 		// Clients
 		a.GET("/clients", s.listClients)
 		a.POST("/clients", s.createClient)
 		a.GET("/clients/:id", s.getClientDetail)
+		a.PATCH("/clients/:id", s.patchClient)
 		a.DELETE("/clients/:id", s.deleteClient)
 		a.GET("/clients/:id/dialer-ips", s.listDialerIPs)
 		a.POST("/clients/:id/dialer-ips", s.addDialerIP)
@@ -83,6 +87,7 @@ func (s *Server) Router() *gin.Engine {
 		// Signaling IPs
 		a.GET("/signaling-ips", s.listSignalingIPs)
 		a.POST("/signaling-ips", s.createSignalingIP)
+		a.PATCH("/signaling-ips/:id", s.patchSignalingIP)
 		a.DELETE("/signaling-ips/:id", s.deleteSignalingIP)
 
 		// Carriers
@@ -95,6 +100,7 @@ func (s *Server) Router() *gin.Engine {
 		// IP groups
 		a.GET("/ip-groups", s.listIPGroups)
 		a.POST("/ip-groups", s.createIPGroup)
+		a.PATCH("/ip-groups/:id", s.patchIPGroup)
 		a.DELETE("/ip-groups/:id", s.deleteIPGroup)
 		a.GET("/ip-groups/:id/members", s.listIPGroupMembers)
 		a.POST("/ip-groups/:id/members", s.addIPGroupMember)
@@ -103,12 +109,24 @@ func (s *Server) Router() *gin.Engine {
 		// Routes
 		a.GET("/routes", s.listRoutes)
 		a.POST("/routes", s.createRoute)
+		a.PATCH("/routes/:id", s.patchRoute)
 		a.DELETE("/routes/:id", s.deleteRoute)
 
 		// Assignments
 		a.GET("/assignments", s.listAssignments)
 		a.POST("/assignments", s.createAssignment)
 		a.DELETE("/assignments/:id", s.endAssignment)
+
+		// CDRs + active calls
+		a.GET("/cdrs", s.listCDRs)
+		a.GET("/cdrs/stats", s.cdrStats)
+		a.GET("/calls/active", s.listActiveCalls)
+
+		// Admin users
+		a.GET("/admin-users", s.listAdminUsers)
+		a.POST("/admin-users", s.createAdminUser)
+		a.PATCH("/admin-users/:id", s.patchAdminUser)
+		a.DELETE("/admin-users/:id", s.deleteAdminUser)
 
 		// Audit log
 		a.GET("/audit", s.listAudit)

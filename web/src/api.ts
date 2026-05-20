@@ -55,6 +55,7 @@ export interface Reseller {
   id: number;
   name: string;
   status: string;
+  notes?: string | null;
   created_at: string;
 }
 export interface Client {
@@ -62,7 +63,53 @@ export interface Client {
   reseller_id: number;
   name: string;
   status: string;
+  notes?: string | null;
   created_at: string;
+}
+export interface AdminUserRow {
+  id: number;
+  email: string;
+  role: "admin" | "noc" | "reseller" | "viewer";
+  status: "active" | "suspended";
+  has_mfa: boolean;
+  created_at: string;
+}
+export interface CDR {
+  id: number;
+  call_id: string;
+  client_id?: number | null;
+  carrier_id?: number | null;
+  node_id?: number | null;
+  media_ip?: string | null;
+  signaling_from?: string | null;
+  ani?: string | null;
+  dnis?: string | null;
+  started_at: string;
+  answered_at?: string | null;
+  ended_at?: string | null;
+  duration_sec?: number | null;
+  disposition?: string | null;
+  sip_code?: number | null;
+}
+export interface CDRStats {
+  total: number;
+  answered: number;
+  asr_pct: number;
+  acd_seconds?: number | null;
+}
+export interface ActiveCallRow {
+  id: number;
+  call_id: string;
+  client_id?: number | null;
+  carrier_id?: number | null;
+  node_id?: number | null;
+  media_ip?: string | null;
+  signaling_from?: string | null;
+  ani?: string | null;
+  dnis?: string | null;
+  started_at: string;
+  last_seen_at: string;
+  duration_sec: number;
 }
 export interface ClientDetail extends Client {
   signaling_ip_id: number | null;
@@ -118,6 +165,7 @@ export interface NodeIP {
   rdns?: string | null;
   reputation_score?: number | null;
   current_calls: number;
+  auto_discovered?: boolean;
   created_at: string;
 }
 export interface SignalingIP {

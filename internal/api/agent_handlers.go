@@ -146,6 +146,21 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct, req.NetInMbps, req.NetOutMbps, req.PacketLossPct)
 
+	// Auto-discover IPs reported by the agent (skip the node's management
+	// host_ip — that's the management interface, not a media/signaling IP).
+	if role == "media" {
+		for _, ip := range req.BoundIPs {
+			_, _ = s.deps.PG.Exec(c.Request.Context(), `
+				INSERT INTO node_ips (node_id, ip_address, status, auto_discovered)
+				SELECT $1, $2::inet, 'active', true
+				WHERE $2::inet IS DISTINCT FROM (SELECT host_ip FROM media_nodes WHERE id = $1)
+				ON CONFLICT (ip_address) DO UPDATE
+				   SET node_id = EXCLUDED.node_id,
+				       last_health_check = now()
+			`, nodeID, ip)
+		}
+	}
+
 	// Touch last_health_check on IPs the agent is currently binding.
 	_, _ = s.deps.PG.Exec(c.Request.Context(),
 		`UPDATE node_ips SET last_health_check = now() WHERE node_id = $1`, nodeID)

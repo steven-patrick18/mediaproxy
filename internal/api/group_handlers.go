@@ -172,6 +172,49 @@ func (s *Server) removeIPGroupMember(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+type patchIPGroupRequest struct {
+	Name   *string `json:"name"`
+	Notes  *string `json:"notes"`
+	Status *string `json:"status"`
+}
+
+func (s *Server) patchIPGroup(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchIPGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "paused", "ended":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE ip_groups
+		   SET name   = COALESCE($2, name),
+		       notes  = COALESCE($3, notes),
+		       status = COALESCE($4, status)
+		 WHERE id = $1
+	`, id, req.Name, req.Notes, req.Status)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (s *Server) deleteIPGroup(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {

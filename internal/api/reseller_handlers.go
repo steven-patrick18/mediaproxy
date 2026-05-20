@@ -29,6 +29,49 @@ func (s *Server) createReseller(c *gin.Context) {
 	c.JSON(http.StatusCreated, r)
 }
 
+type patchResellerRequest struct {
+	Name   *string `json:"name"`
+	Status *string `json:"status"`
+	Notes  *string `json:"notes"`
+}
+
+func (s *Server) patchReseller(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchResellerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "suspended", "deleted":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE resellers
+		   SET name   = COALESCE($2, name),
+		       status = COALESCE($3, status),
+		       notes  = COALESCE($4, notes)
+		 WHERE id = $1
+	`, id, req.Name, req.Status, req.Notes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (s *Server) deleteReseller(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -79,6 +122,53 @@ func (s *Server) createClient(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, cl)
+}
+
+type patchClientRequest struct {
+	Name       *string `json:"name"`
+	ResellerID *int64  `json:"reseller_id"`
+	Status     *string `json:"status"`
+	Notes      *string `json:"notes"`
+}
+
+func (s *Server) patchClient(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchClientRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "suspended", "deleted":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE clients
+		   SET name        = COALESCE($2, name),
+		       reseller_id = COALESCE($3, reseller_id),
+		       status      = COALESCE($4, status),
+		       notes       = COALESCE($5, notes)
+		 WHERE id = $1
+	`, id, req.Name, req.ResellerID, req.Status, req.Notes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	// Suspension or rename may affect downstream cache
+	_ = s.deps.SigCache.SyncClient(c.Request.Context(), id)
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) deleteClient(c *gin.Context) {

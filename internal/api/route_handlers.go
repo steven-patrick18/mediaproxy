@@ -90,6 +90,51 @@ func (s *Server) createRoute(c *gin.Context) {
 	c.JSON(http.StatusCreated, r)
 }
 
+type patchRouteRequest struct {
+	MatchPrefix *string `json:"match_prefix"`
+	CarrierID   *int64  `json:"carrier_id"`
+	Priority    *int    `json:"priority"`
+	Status      *string `json:"status"`
+}
+
+func (s *Server) patchRoute(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchRouteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "disabled":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE routes
+		   SET match_prefix = COALESCE($2, match_prefix),
+		       carrier_id   = COALESCE($3, carrier_id),
+		       priority     = COALESCE($4, priority),
+		       status       = COALESCE($5, status)
+		 WHERE id = $1
+	`, id, req.MatchPrefix, req.CarrierID, req.Priority, req.Status)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (s *Server) deleteRoute(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {

@@ -13,18 +13,17 @@ import RoutesPage from "./pages/Routes";
 import Assignments from "./pages/Assignments";
 import LiveCalls from "./pages/LiveCalls";
 import CDRs from "./pages/CDRs";
+import Reports from "./pages/Reports";
 import AuditLog from "./pages/AuditLog";
+import Users from "./pages/Users";
+import SettingsPage from "./pages/Settings";
 import Layout from "./components/Layout";
 import { useAuth } from "./auth";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
   if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center text-slate-500">
-        loading…
-      </div>
-    );
+    return <div className="flex h-screen items-center justify-center text-slate-500">loading…</div>;
   }
   if (!user) return <Navigate to="/login" replace />;
   return children;
@@ -36,26 +35,29 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route
         path="/"
-        element={
-          <Protected>
-            <Layout />
-          </Protected>
-        }
+        element={<Protected><Layout /></Protected>}
       >
         <Route index element={<Dashboard />} />
+        <Route path="calls" element={<LiveCalls />} />
+        <Route path="cdrs" element={<CDRs />} />
+        <Route path="reports" element={<Reports />} />
+
         <Route path="resellers" element={<Resellers />} />
         <Route path="clients" element={<Clients />} />
         <Route path="clients/:id" element={<ClientDetail />} />
+
         <Route path="nodes" element={<Nodes />} />
         <Route path="ip-pool" element={<IPPool />} />
         <Route path="ip-groups" element={<IPGroups />} />
         <Route path="signaling-ips" element={<SignalingIPs />} />
+
         <Route path="carriers" element={<Carriers />} />
         <Route path="routes" element={<RoutesPage />} />
         <Route path="assignments" element={<Assignments />} />
-        <Route path="calls" element={<LiveCalls />} />
-        <Route path="cdrs" element={<CDRs />} />
+
+        <Route path="users" element={<Users />} />
         <Route path="audit" element={<AuditLog />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

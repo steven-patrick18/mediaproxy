@@ -22,6 +22,7 @@ type NodeIP struct {
 	Rdns            *string    `json:"rdns,omitempty"`
 	ReputationScore *int       `json:"reputation_score,omitempty"`
 	CurrentCalls    int        `json:"current_calls"`
+	AutoDiscovered  bool       `json:"auto_discovered"`
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
@@ -38,13 +39,15 @@ func (s *Server) listNodeIPs(c *gin.Context) {
 		}
 		rows, err = s.deps.PG.Query(c.Request.Context(), `
 			SELECT id, node_id, host(ip_address), status, purchased_from, lease_block,
-			       lease_expires, monthly_cost, rdns, reputation_score, current_calls, created_at
+			       lease_expires, monthly_cost, rdns, reputation_score, current_calls,
+			       auto_discovered, created_at
 			  FROM node_ips WHERE node_id = $1 ORDER BY ip_address
 		`, nodeID)
 	} else {
 		rows, err = s.deps.PG.Query(c.Request.Context(), `
 			SELECT id, node_id, host(ip_address), status, purchased_from, lease_block,
-			       lease_expires, monthly_cost, rdns, reputation_score, current_calls, created_at
+			       lease_expires, monthly_cost, rdns, reputation_score, current_calls,
+			       auto_discovered, created_at
 			  FROM node_ips ORDER BY node_id, ip_address
 		`)
 	}
@@ -59,7 +62,8 @@ func (s *Server) listNodeIPs(c *gin.Context) {
 		var n NodeIP
 		if err := rows.Scan(&n.ID, &n.NodeID, &n.IPAddress, &n.Status,
 			&n.PurchasedFrom, &n.LeaseBlock, &n.LeaseExpires, &n.MonthlyCost,
-			&n.Rdns, &n.ReputationScore, &n.CurrentCalls, &n.CreatedAt); err != nil {
+			&n.Rdns, &n.ReputationScore, &n.CurrentCalls,
+			&n.AutoDiscovered, &n.CreatedAt); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -94,10 +98,12 @@ func (s *Server) createNodeIP(c *gin.Context) {
 		INSERT INTO node_ips (node_id, ip_address, status, purchased_from, lease_block, monthly_cost)
 		VALUES ($1, $2::inet, 'active', $3, $4, $5)
 		RETURNING id, node_id, host(ip_address), status, purchased_from, lease_block,
-		          lease_expires, monthly_cost, rdns, reputation_score, current_calls, created_at
+		          lease_expires, monthly_cost, rdns, reputation_score, current_calls,
+		          auto_discovered, created_at
 	`, req.NodeID, req.IPAddress, purchasedFrom, leaseBlock, req.MonthlyCost).Scan(
 		&n.ID, &n.NodeID, &n.IPAddress, &n.Status, &n.PurchasedFrom, &n.LeaseBlock,
-		&n.LeaseExpires, &n.MonthlyCost, &n.Rdns, &n.ReputationScore, &n.CurrentCalls, &n.CreatedAt,
+		&n.LeaseExpires, &n.MonthlyCost, &n.Rdns, &n.ReputationScore, &n.CurrentCalls,
+		&n.AutoDiscovered, &n.CreatedAt,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -166,7 +172,11 @@ func (s *Server) bulkCreateNodeIPs(c *gin.Context) {
 }
 
 type patchNodeIPRequest struct {
-	Status *string `json:"status"`
+	Status        *string  `json:"status"`
+	PurchasedFrom *string  `json:"purchased_from"`
+	LeaseBlock    *string  `json:"lease_block"`
+	MonthlyCost   *float64 `json:"monthly_cost"`
+	Rdns          *string  `json:"rdns"`
 }
 
 func (s *Server) patchNodeIP(c *gin.Context) {
@@ -180,18 +190,23 @@ func (s *Server) patchNodeIP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Status == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
-		return
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "disabled", "flagged", "reserve":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
 	}
-	switch *req.Status {
-	case "active", "disabled", "flagged", "reserve":
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
-		return
-	}
-	tag, err := s.deps.PG.Exec(c.Request.Context(),
-		`UPDATE node_ips SET status = $1 WHERE id = $2`, *req.Status, id)
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE node_ips SET
+		   status         = COALESCE($2, status),
+		   purchased_from = COALESCE($3, purchased_from),
+		   lease_block    = COALESCE($4, lease_block),
+		   monthly_cost   = COALESCE($5, monthly_cost),
+		   rdns           = COALESCE($6, rdns)
+		 WHERE id = $1
+	`, id, req.Status, req.PurchasedFrom, req.LeaseBlock, req.MonthlyCost, req.Rdns)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

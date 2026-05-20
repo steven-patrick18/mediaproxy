@@ -1,24 +1,30 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
+import { ChevronDownIcon } from "./Icons";
 
-const sections: { heading: string; items: { to: string; label: string; end?: boolean }[] }[] = [
+type NavItem = { to: string; label: string };
+type NavSection = { label: string; items: NavItem[] };
+
+const nav: NavSection[] = [
+  { label: "Dashboard", items: [{ to: "/", label: "Overview" }] },
   {
-    heading: "Overview",
+    label: "Calls",
     items: [
-      { to: "/", label: "Dashboard", end: true },
       { to: "/calls", label: "Live calls" },
       { to: "/cdrs", label: "CDRs" },
+      { to: "/reports", label: "Reports" },
     ],
   },
   {
-    heading: "Tenants",
+    label: "Tenants",
     items: [
       { to: "/resellers", label: "Resellers" },
       { to: "/clients", label: "Clients" },
     ],
   },
   {
-    heading: "Infrastructure",
+    label: "Infrastructure",
     items: [
       { to: "/nodes", label: "Nodes" },
       { to: "/ip-pool", label: "IP Pool" },
@@ -27,7 +33,7 @@ const sections: { heading: string; items: { to: string; label: string; end?: boo
     ],
   },
   {
-    heading: "Routing",
+    label: "Routing",
     items: [
       { to: "/carriers", label: "Carriers" },
       { to: "/routes", label: "Routes" },
@@ -35,53 +41,143 @@ const sections: { heading: string; items: { to: string; label: string; end?: boo
     ],
   },
   {
-    heading: "Operations",
-    items: [{ to: "/audit", label: "Audit log" }],
+    label: "System",
+    items: [
+      { to: "/users", label: "Admin users" },
+      { to: "/audit", label: "Audit log" },
+      { to: "/settings", label: "Settings" },
+    ],
   },
 ];
 
-export default function Layout() {
-  const { user, logout } = useAuth();
+function Dropdown({ section, currentPath }: { section: NavSection; currentPath: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
-  const navItem = ({ isActive }: { isActive: boolean }) =>
-    `block rounded px-3 py-1.5 text-sm transition ${
-      isActive ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-200"
-    }`;
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
 
+  // Single-item sections (Dashboard) render as a direct link.
+  if (section.items.length === 1) {
+    const it = section.items[0];
+    const active = currentPath === it.to;
+    return (
+      <Link
+        to={it.to}
+        className={`flex items-center rounded px-3 py-1.5 text-sm font-medium transition ${
+          active ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white"
+        }`}
+      >
+        {section.label}
+      </Link>
+    );
+  }
+
+  const anyActive = section.items.some((it) => currentPath === it.to || currentPath.startsWith(it.to + "/"));
   return (
-    <div className="flex h-screen">
-      <aside className="flex w-60 flex-col border-r border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-4">
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900">mediaproxy</h1>
-          <p className="text-xs text-slate-500">control plane</p>
-        </div>
-        <nav className="flex-1 overflow-y-auto p-3">
-          {sections.map((s) => (
-            <div key={s.heading} className="mb-4">
-              <div className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {s.heading}
-              </div>
-              <div className="space-y-0.5">
-                {s.items.map((it) => (
-                  <NavLink key={it.to} to={it.to} end={it.end} className={navItem}>
-                    {it.label}
-                  </NavLink>
-                ))}
-              </div>
-            </div>
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`flex items-center gap-1 rounded px-3 py-1.5 text-sm font-medium transition ${
+          anyActive ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white"
+        }`}
+      >
+        {section.label}
+        <ChevronDownIcon className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 w-48 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          {section.items.map((it) => (
+            <NavLink
+              key={it.to}
+              to={it.to}
+              onClick={() => setOpen(false)}
+              className={({ isActive }) =>
+                `block px-3 py-2 text-sm ${
+                  isActive ? "bg-brand-50 font-medium text-brand-700" : "text-slate-700 hover:bg-slate-100"
+                }`
+              }
+            >
+              {it.label}
+            </NavLink>
           ))}
-        </nav>
-        <div className="border-t border-slate-200 p-3 text-xs text-slate-500">
-          <div className="mb-2 truncate">{user?.email}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserMenu() {
+  const { user, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function on(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", on);
+    return () => document.removeEventListener("mousedown", on);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-200 hover:bg-slate-800 hover:text-white"
+      >
+        <div className="grid h-7 w-7 place-items-center rounded-full bg-brand-600 text-xs font-medium text-white">
+          {user?.email?.[0]?.toUpperCase() ?? "?"}
+        </div>
+        <span className="hidden sm:inline">{user?.email}</span>
+        <ChevronDownIcon className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-52 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 px-3 py-2 text-xs text-slate-500">
+            Signed in as<br />
+            <span className="font-mono text-slate-700">{user?.email}</span>
+            <span className="ml-2 rounded bg-brand-50 px-1.5 py-0.5 text-[10px] uppercase text-brand-700">
+              {user?.role}
+            </span>
+          </div>
           <button
             onClick={logout}
-            className="w-full rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-100"
+            className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
           >
             Log out
           </button>
         </div>
-      </aside>
-      <main className="flex-1 overflow-auto p-8">
+      )}
+    </div>
+  );
+}
+
+export default function Layout() {
+  const loc = useLocation();
+  return (
+    <div className="flex h-screen flex-col bg-slate-100">
+      <header className="border-b border-slate-700 bg-slate-900 text-slate-200">
+        <div className="flex h-12 items-center px-4">
+          <Link to="/" className="mr-6 flex items-center gap-2 text-white">
+            <div className="grid h-7 w-7 place-items-center rounded bg-brand-600 text-xs font-bold">
+              mp
+            </div>
+            <span className="font-semibold tracking-tight">mediaproxy</span>
+          </Link>
+          <nav className="flex flex-1 items-center gap-1">
+            {nav.map((s) => (
+              <Dropdown key={s.label} section={s} currentPath={loc.pathname} />
+            ))}
+          </nav>
+          <UserMenu />
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-auto px-6 py-6">
         <Outlet />
       </main>
     </div>
