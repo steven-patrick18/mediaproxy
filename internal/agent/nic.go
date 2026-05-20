@@ -17,7 +17,10 @@ type nicLink struct {
 	} `json:"addr_info"`
 }
 
-// ScanIPs returns all IPv4 addresses currently bound to iface.
+// ScanIPs returns the unique IPv4 addresses currently bound to iface.
+// Some kernels/cloud-init setups report the same address twice (primary +
+// "scope host" secondary), so we dedup and skip loopback / link-local /
+// any unparsable entry to keep the report clean.
 func ScanIPs(iface string) ([]string, error) {
 	out, err := exec.Command("ip", "-j", "addr", "show", "dev", iface).Output()
 	if err != nil {
@@ -27,12 +30,25 @@ func ScanIPs(iface string) ([]string, error) {
 	if err := json.Unmarshal(out, &links); err != nil {
 		return nil, fmt.Errorf("parse ip json: %w", err)
 	}
+	seen := map[string]struct{}{}
 	addrs := []string{}
 	for _, l := range links {
 		for _, a := range l.AddrInfo {
-			if a.Family == "inet" {
-				addrs = append(addrs, a.Local)
+			if a.Family != "inet" {
+				continue
 			}
+			if a.Local == "" {
+				continue
+			}
+			// Skip 127.0.0.0/8 and 169.254.0.0/16 — never managed.
+			if strings.HasPrefix(a.Local, "127.") || strings.HasPrefix(a.Local, "169.254.") {
+				continue
+			}
+			if _, dup := seen[a.Local]; dup {
+				continue
+			}
+			seen[a.Local] = struct{}{}
+			addrs = append(addrs, a.Local)
 		}
 	}
 	return addrs, nil
