@@ -142,11 +142,17 @@ function NodeCard({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3 text-xs">
-        {neverSeen && (
-          <button onClick={() => onProvision(n)} className="rounded bg-brand-600 px-2 py-1 font-medium text-white hover:bg-brand-700">
-            Provision via SSH
-          </button>
-        )}
+        <button
+          onClick={() => onProvision(n)}
+          className={
+            neverSeen
+              ? "rounded bg-brand-600 px-2 py-1 font-medium text-white hover:bg-brand-700"
+              : "rounded border border-brand-300 px-2 py-1 text-brand-700 hover:bg-brand-50"
+          }
+          title={neverSeen ? "Install the agent on this host" : "Re-run provisioning to update the agent binary + reinstall packages"}
+        >
+          {neverSeen ? "Provision via SSH" : "Re-provision (update agent)"}
+        </button>
         <button onClick={() => cmd("apply", "Apply IPs now")} className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100">
           Apply
         </button>
