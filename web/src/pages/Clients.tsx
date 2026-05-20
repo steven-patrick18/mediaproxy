@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type Client, type Reseller } from "../api";
+import { api, type Client, type Reseller, type SignalingIP } from "../api";
 import Modal from "../components/Modal";
 import { PencilIcon, PlusIcon, TrashIcon } from "../components/Icons";
 
 export default function Clients() {
   const [rows, setRows] = useState<Client[]>([]);
   const [resellers, setResellers] = useState<Reseller[]>([]);
+  const [sigs, setSigs] = useState<SignalingIP[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,14 +24,19 @@ export default function Clients() {
     Promise.all([
       api.get<Client[]>("/api/v1/clients"),
       api.get<Reseller[]>("/api/v1/resellers"),
+      api.get<SignalingIP[]>("/api/v1/signaling-ips"),
     ])
-      .then(([c, r]) => {
+      .then(([c, r, s]) => {
         setRows(c);
         setResellers(r);
+        setSigs(s);
       })
       .catch((e) => setErr(e.message));
   }
   useEffect(reload, []);
+
+  const sigForClient = (clientID: number) =>
+    sigs.find((s) => s.assigned_client_id === clientID) ?? null;
 
   function openCreate() {
     setForm({ reseller_id: resellers[0]?.id ?? 0, name: "", status: "active", notes: "" });
@@ -108,6 +114,7 @@ export default function Clients() {
               <th className="px-4 py-2">ID</th>
               <th className="px-4 py-2">Reseller</th>
               <th className="px-4 py-2">Name</th>
+              <th className="px-4 py-2">Signaling IP</th>
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2">Created</th>
               <th className="px-4 py-2 text-right">Actions</th>
@@ -116,7 +123,7 @@ export default function Clients() {
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-400">No clients yet.</td>
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-400">No clients yet.</td>
               </tr>
             )}
             {rows.map((r) => (
@@ -127,6 +134,16 @@ export default function Clients() {
                 <td className="px-4 py-2">{resellerName(r.reseller_id)}</td>
                 <td className="px-4 py-2 font-medium">
                   <Link to={`/clients/${r.id}`} className="hover:underline">{r.name}</Link>
+                </td>
+                <td className="px-4 py-2">
+                  {(() => {
+                    const sig = sigForClient(r.id);
+                    return sig ? (
+                      <span className="font-mono text-sm">{sig.ip_address}</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">— not assigned —</span>
+                    );
+                  })()}
                 </td>
                 <td className="px-4 py-2">{r.status}</td>
                 <td className="px-4 py-2 text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
