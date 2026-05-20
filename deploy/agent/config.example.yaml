@@ -1,0 +1,24 @@
+## /etc/node-agent/config.yaml
+## Copy to /etc/node-agent/config.yaml on the media or sip_proxy node, edit, restart node-agent.
+
+node_id: 1                                        # from media_nodes.id in the base app
+role: media                                       # "media" or "sip_proxy"
+control_plane_url: https://mediaproxy.voipzap.com
+agent_token: "REPLACE_WITH_THE_TOKEN_PRINTED_WHEN_THE_NODE_WAS_CREATED"
+
+iface: eth0
+cidr: 24                                          # netmask used for `ip addr add` and netplan
+
+managed_netplan_file: /etc/netplan/90-managed-ips.yaml
+heartbeat_seconds: 60
+
+# IPs the agent must NEVER touch.  Always include the host's management IP.
+protect_ips:
+  - 45.77.156.60                                  # example management IP
+protect_default_route: true
+
+# Role-specific paths
+rtpengine_conf_path: /etc/rtpengine/rtpengine.conf
+kamailio_listen_path: /etc/kamailio/listen.cfg
+
+http_timeout: 10s

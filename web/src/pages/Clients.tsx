@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type Client } from "../api";
 
 export default function Clients() {
@@ -17,7 +18,7 @@ export default function Clients() {
       <header>
         <h2 className="text-2xl font-semibold tracking-tight">Clients</h2>
         <p className="text-sm text-slate-500">
-          End customers — their dialer IPs get whitelisted on the SIP proxies.
+          End customers. Click a row to manage their signaling IP and dialer IPs.
         </p>
       </header>
 
@@ -47,10 +48,18 @@ export default function Clients() {
               </tr>
             )}
             {rows.map((r) => (
-              <tr key={r.id}>
-                <td className="px-4 py-2 font-mono text-slate-500">{r.id}</td>
+              <tr key={r.id} className="hover:bg-slate-50">
+                <td className="px-4 py-2 font-mono text-slate-500">
+                  <Link to={`/clients/${r.id}`} className="hover:underline">
+                    {r.id}
+                  </Link>
+                </td>
                 <td className="px-4 py-2">{r.reseller_id}</td>
-                <td className="px-4 py-2">{r.name}</td>
+                <td className="px-4 py-2 font-medium">
+                  <Link to={`/clients/${r.id}`} className="hover:underline">
+                    {r.name}
+                  </Link>
+                </td>
                 <td className="px-4 py-2">{r.status}</td>
                 <td className="px-4 py-2 text-slate-500">
                   {new Date(r.created_at).toLocaleString()}

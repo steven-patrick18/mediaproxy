@@ -13,6 +13,7 @@ import (
 	"mediaproxy/internal/api"
 	"mediaproxy/internal/config"
 	"mediaproxy/internal/db"
+	"mediaproxy/internal/sigcache"
 
 	"github.com/joho/godotenv"
 )
@@ -50,6 +51,7 @@ func main() {
 		PG:        pg,
 		Redis:     rdb,
 		JWTSecret: cfg.JWTSecret,
+		SigCache:  &sigcache.Writer{PG: pg, Redis: rdb},
 	})
 
 	httpSrv := &http.Server{

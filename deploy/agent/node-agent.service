@@ -1,0 +1,17 @@
+[Unit]
+Description=mediaproxy Node Agent
+After=network-online.target rtpengine.service kamailio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/node-agent --config /etc/node-agent/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=1000000
+# Must run as root: needs to call `ip addr add/del` and `netplan apply`.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

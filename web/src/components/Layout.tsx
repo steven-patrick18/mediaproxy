@@ -27,6 +27,9 @@ export default function Layout() {
           <NavLink to="/nodes" className={navItem}>
             Nodes
           </NavLink>
+          <NavLink to="/signaling-ips" className={navItem}>
+            Signaling IPs
+          </NavLink>
           <NavLink to="/resellers" className={navItem}>
             Resellers
           </NavLink>

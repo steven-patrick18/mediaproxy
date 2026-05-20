@@ -3,7 +3,9 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Resellers from "./pages/Resellers";
 import Clients from "./pages/Clients";
+import ClientDetail from "./pages/ClientDetail";
 import Nodes from "./pages/Nodes";
+import SignalingIPs from "./pages/SignalingIPs";
 import Layout from "./components/Layout";
 import { useAuth } from "./auth";
 
@@ -35,7 +37,9 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="resellers" element={<Resellers />} />
         <Route path="clients" element={<Clients />} />
+        <Route path="clients/:id" element={<ClientDetail />} />
         <Route path="nodes" element={<Nodes />} />
+        <Route path="signaling-ips" element={<SignalingIPs />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
