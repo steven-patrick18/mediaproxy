@@ -117,6 +117,23 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 	var req agentHeartbeatRequest
 	_ = c.ShouldBindJSON(&req)
 
+	// Defensive dedup: older agents (or weird kernel/cloud-init setups)
+	// can report the same IP twice in bound_ips. Track unique entries so
+	// counts and downstream INSERTs are honest.
+	seen := map[string]struct{}{}
+	uniqIPs := make([]string, 0, len(req.BoundIPs))
+	for _, ip := range req.BoundIPs {
+		if ip == "" {
+			continue
+		}
+		if _, dup := seen[ip]; dup {
+			continue
+		}
+		seen[ip] = struct{}{}
+		uniqIPs = append(uniqIPs, ip)
+	}
+	req.BoundIPs = uniqIPs
+
 	// Update the latest-snapshot columns + bump last_seen_at.
 	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE media_nodes
