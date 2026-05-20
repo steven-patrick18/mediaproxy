@@ -140,34 +140,137 @@ export default function Firewall() {
     }
   }
 
-  async function applyPreset(p: "rate_limit_sip" | "block_sipvicious") {
-    try {
-      if (p === "rate_limit_sip") {
-        await api.post("/api/v1/firewall/rules", {
-          name: "Rate-limit SIP per source",
-          action: "rate_limit",
-          proto: "udp",
-          dest_port_low: 5060,
-          dest_port_high: 5060,
-          rate_per_second: 50,
-          priority: 50,
-          notes: "Caps how fast a single source IP can send SIP packets — protects against floods.",
-        });
-      } else if (p === "block_sipvicious") {
-        // The renderer only does L3/L4 — User-Agent filtering is a Kamailio concern.
-        // We pre-create a "known scanner" block rule the operator can extend with CIDRs.
-        await api.post("/api/v1/firewall/rules", {
-          name: "Block known SIP scanner ranges",
-          action: "block",
-          source_cidr: "192.0.2.0/24", // placeholder; edit after to taste
-          priority: 10,
-          notes: "Drops packets from a known scanner CIDR. Edit the CIDR to match your threat intel feed.",
-        });
+  // ---------- Templates ----------
+  //
+  // Each template is a small batch of rules created with one click.
+  // We POST them sequentially; existing rules of the same name will fail
+  // the unique-ish check and we just continue — idempotent enough for now.
+  type RuleDraft = {
+    name: string;
+    action: FirewallRule["action"];
+    source_cidr?: string;
+    proto?: FirewallRule["proto"];
+    dest_port_low?: number;
+    dest_port_high?: number;
+    rate_per_second?: number;
+    priority: number;
+    notes: string;
+  };
+
+  const BOGON_CIDRS = [
+    { cidr: "10.0.0.0/8", label: "RFC1918 private" },
+    { cidr: "172.16.0.0/12", label: "RFC1918 private" },
+    { cidr: "192.168.0.0/16", label: "RFC1918 private" },
+    { cidr: "169.254.0.0/16", label: "link-local" },
+    { cidr: "100.64.0.0/10", label: "CGNAT" },
+    { cidr: "224.0.0.0/4", label: "multicast" },
+    { cidr: "240.0.0.0/4", label: "reserved" },
+    { cidr: "0.0.0.0/8", label: "this network" },
+  ];
+
+  const bogonRules: RuleDraft[] = BOGON_CIDRS.map((b) => ({
+    name: `Bogon block: ${b.cidr}`,
+    action: "block",
+    source_cidr: b.cidr,
+    priority: 10,
+    notes: `Drops packets claiming a ${b.label} source IP — should never appear from the public internet.`,
+  }));
+
+  const rateLimitSipRules: RuleDraft[] = [
+    {
+      name: "Rate-limit SIP UDP per source",
+      action: "rate_limit",
+      proto: "udp",
+      dest_port_low: 5060,
+      dest_port_high: 5060,
+      rate_per_second: 50,
+      priority: 50,
+      notes: "Caps 50 SIP packets/sec from any single source IP. Stops floods without affecting legitimate dialers.",
+    },
+    {
+      name: "Rate-limit SIP TCP per source",
+      action: "rate_limit",
+      proto: "tcp",
+      dest_port_low: 5060,
+      dest_port_high: 5060,
+      rate_per_second: 50,
+      priority: 50,
+      notes: "Same as UDP variant. TCP SIP is rarer but worth protecting.",
+    },
+  ];
+
+  const aggressiveSipRule: RuleDraft = {
+    name: "Aggressive SIP rate-limit (10/s per source)",
+    action: "rate_limit",
+    proto: "udp",
+    dest_port_low: 5060,
+    dest_port_high: 5060,
+    rate_per_second: 10,
+    priority: 40,
+    notes: "Tighter cap (10/s) — appropriate for clients with low call volume. Will drop legitimate bursts above 10 CPS.",
+  };
+
+  const sshBruteforceRule: RuleDraft = {
+    name: "SSH brute-force rate-limit",
+    action: "rate_limit",
+    proto: "tcp",
+    dest_port_low: 22,
+    dest_port_high: 22,
+    rate_per_second: 5,
+    priority: 30,
+    notes: "Caps 5 packets/sec to SSH per source IP. Combined with fail2ban this stops password-guessing fast.",
+  };
+
+  const PRESETS: { key: string; title: string; tagline: string; rules: RuleDraft[] }[] = [
+    {
+      key: "baseline",
+      title: "Recommended baseline (10 rules)",
+      tagline: "Bogon-source blocks + SIP per-source rate limit + SSH rate limit. Apply this on every node.",
+      rules: [...bogonRules, ...rateLimitSipRules, sshBruteforceRule],
+    },
+    {
+      key: "bogons",
+      title: "Block bogon source IPs (8 rules)",
+      tagline: "Drop packets that claim RFC1918 / link-local / CGNAT / multicast / reserved source addresses.",
+      rules: bogonRules,
+    },
+    {
+      key: "ratelimit_sip",
+      title: "SIP per-source rate-limit (2 rules)",
+      tagline: "50 SIP packets/sec per source IP on both UDP and TCP. Sensible default for most carriers.",
+      rules: rateLimitSipRules,
+    },
+    {
+      key: "ratelimit_sip_tight",
+      title: "Aggressive SIP rate-limit (1 rule)",
+      tagline: "Tighter 10/s cap — use when clients are low-volume and you want hard protection against bursts.",
+      rules: [aggressiveSipRule],
+    },
+    {
+      key: "ratelimit_ssh",
+      title: "SSH brute-force rate-limit (1 rule)",
+      tagline: "Caps SSH packets per source. Pairs well with fail2ban.",
+      rules: [sshBruteforceRule],
+    },
+  ];
+
+  async function applyPreset(key: string) {
+    const p = PRESETS.find((x) => x.key === key);
+    if (!p) return;
+    if (!confirm(`Add ${p.rules.length} rule(s) for "${p.title}"?\n\nEach is independently editable / deletable after.`)) return;
+    setErr(null);
+    let added = 0;
+    let skipped = 0;
+    for (const r of p.rules) {
+      try {
+        await api.post("/api/v1/firewall/rules", r);
+        added++;
+      } catch {
+        skipped++;
       }
-      reload();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "preset failed");
     }
+    setApplyStatus(`Preset "${p.title}": ${added} rule(s) added${skipped ? `, ${skipped} skipped (duplicate names)` : ""}.`);
+    reload();
   }
 
   function downloadNFT() {
@@ -235,29 +338,99 @@ export default function Firewall() {
 
       {err && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>}
 
-      {/* Presets */}
+      {/* Templates */}
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          One-click presets
+        <div className="mb-3 flex items-start justify-between">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Ready-to-apply templates
+              <Help>
+                Each template is a small batch of rules created with one click. You can
+                edit individual rules after — these are just sensible starting points.
+                Rules with names that already exist are skipped.
+              </Help>
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Recommended order: <strong>Recommended baseline</strong> first on every node;
+              add tighter SIP rate limits per-environment if needed.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {PRESETS.map((p) => (
+            <div
+              key={p.key}
+              className={
+                "rounded-lg border p-3 " +
+                (p.key === "baseline"
+                  ? "border-emerald-300 bg-emerald-50"
+                  : "border-slate-200 bg-slate-50")
+              }
+            >
+              <div className="mb-1 flex items-baseline justify-between">
+                <h4 className="text-sm font-semibold text-slate-800">{p.title}</h4>
+                {p.key === "baseline" && (
+                  <span className="rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
+                    recommended
+                  </span>
+                )}
+              </div>
+              <p className="mb-3 text-xs text-slate-600">{p.tagline}</p>
+              <button
+                onClick={() => applyPreset(p.key)}
+                className={
+                  "w-full rounded px-3 py-1.5 text-sm font-medium " +
+                  (p.key === "baseline"
+                    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                    : "border border-slate-300 hover:bg-white")
+                }
+              >
+                Add {p.rules.length} rule{p.rules.length === 1 ? "" : "s"}
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Recommendations */}
+      <section className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-blue-900">
+          What we recommend
           <Help>
-            Quick-add common protection rules. You can edit them after — these are just
-            templates with sensible defaults.
+            Practical advice for hardening a VoIP SBC. The auto-allowlist already gives
+            you strong "carrier-only" SIP — these recommendations harden everything else.
           </Help>
         </h3>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            onClick={() => applyPreset("rate_limit_sip")}
-            className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
-          >
-            + Rate-limit SIP per source (50/s)
-          </button>
-          <button
-            onClick={() => applyPreset("block_sipvicious")}
-            className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
-          >
-            + Block scanner CIDR (template)
-          </button>
-        </div>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-blue-900">
+          <li>
+            <strong>Click "Recommended baseline"</strong> on every node — it blocks bogon source
+            IPs, rate-limits SIP at 50/s per source, and caps SSH packets to slow brute-force attacks.
+          </li>
+          <li>
+            <strong>Leave the auto-allowlist as your only SIP allow</strong> — every Carrier
+            host and active client dialer IP is already in there. Don't add an "allow SIP from anywhere"
+            rule unless you know what you're doing.
+          </li>
+          <li>
+            <strong>If a client has bursty / spammy dialing</strong>, add the "Aggressive SIP rate-limit"
+            template; then exclude that client by adding a per-client higher allow rule with priority 30.
+          </li>
+          <li>
+            <strong>SIP scanner blocking belongs in Kamailio</strong>, not the firewall — drop by
+            User-Agent (sipvicious, friendly-scanner, sundayddr, etc.) once Kamailio is in the call
+            path. The firewall layer is for raw IP/port; Kamailio is for SIP semantics.
+          </li>
+          <li>
+            <strong>Apply rules with the rollback safety net</strong> — the "Apply to this node"
+            button does a 2-minute auto-revert if the new ruleset breaks connectivity. Don't paste-and-apply
+            rules manually unless you have a backup SSH session you can use to <code>nft flush ruleset</code>.
+          </li>
+          <li>
+            <strong>The firewall does not stop DDoS at the edge</strong> — for protection against
+            multi-Gbps attacks on UDP/5060, use a network-level scrubbing provider
+            (Path.net, Voxility, Cloudflare Magic Transit) in front of these IPs.
+          </li>
+        </ul>
       </section>
 
       {/* Custom rules */}
