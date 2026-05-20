@@ -119,7 +119,12 @@ function NodeCard({
       </header>
 
       <div className="mt-4 space-y-2">
-        <Bar label="Active calls" pct={pct(calls, n.max_calls || 1)} value={`${calls} / ${n.max_calls || "—"}`} tone="info" />
+        <Bar
+          label={n.role === "sip_proxy" ? "Active dialogs (signaling)" : "Active calls (media)"}
+          pct={pct(calls, n.max_calls || 1)}
+          value={`${calls} / ${n.max_calls || "—"}`}
+          tone="info"
+        />
         <Bar label="CPU" pct={cpu} value={`${cpu.toFixed(1)}%`} />
         <Bar label="RAM" pct={ram} value={`${ram.toFixed(1)}%`} />
         <Bar label={`Network (${nicGbps} Gbps NIC)`} pct={netPct} value={`${netIn.toFixed(1)} ↓ / ${netOut.toFixed(1)} ↑ Mbps`} />
@@ -425,7 +430,16 @@ export default function Nodes() {
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500">Role</label>
-                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "media" | "sip_proxy" })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
+                <select
+                  value={form.role}
+                  onChange={(e) => {
+                    const role = e.target.value as "media" | "sip_proxy";
+                    // Sensible default: media nodes are RTP-capacity bound (~2500),
+                    // sip_proxy nodes can hold many more concurrent dialogs.
+                    setForm({ ...form, role, max_calls: role === "sip_proxy" ? 10000 : 2500 });
+                  }}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                >
                   <option value="media">media (RTPEngine)</option>
                   <option value="sip_proxy">sip_proxy (Kamailio)</option>
                 </select>
@@ -450,8 +464,21 @@ export default function Nodes() {
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="block text-xs font-medium text-slate-500">Max concurrent calls</label>
-                <input type="number" min={0} value={form.max_calls} onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+                <label className="block text-xs font-medium text-slate-500">
+                  {form.role === "sip_proxy" ? "Max concurrent dialogs (signaling)" : "Max concurrent calls (media)"}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.max_calls}
+                  onChange={(e) => setForm({ ...form, max_calls: Number(e.target.value) })}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+                <p className="mt-1 text-xs text-slate-400">
+                  {form.role === "sip_proxy"
+                    ? "Kamailio is light per dialog — 10K+ is fine on a modest VPS. Signaling is rarely the bottleneck."
+                    : "RTPEngine's hard capacity for media streams on this node. Hit this and new calls fail over to another media node."}
+                </p>
               </div>
             </div>
 
