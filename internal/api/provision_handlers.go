@@ -65,8 +65,12 @@ func (s *Server) provisionNode(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer cancel()
 
+	// nginx terminates TLS before the request reaches us — so c.Request.TLS
+	// is always nil. Trust X-Forwarded-Proto when present (set by nginx).
 	scheme := "https"
-	if c.Request.TLS == nil {
+	if p := c.GetHeader("X-Forwarded-Proto"); p != "" {
+		scheme = p
+	} else if c.Request.TLS == nil {
 		scheme = "http"
 	}
 	host := c.Request.Host

@@ -83,9 +83,18 @@ func Run(ctx context.Context, r Request) Result {
 	}
 
 	log("Downloading agent binary from %s", r.BinaryURL)
-	dl := fmt.Sprintf(
-		"curl -fsSL -o /usr/local/bin/node-agent %q && chmod +x /usr/local/bin/node-agent",
-		r.BinaryURL)
+	// Download to /tmp first then atomically install. This avoids
+	// curl exit 23 ("write error to destination") that some hosts hit
+	// when piping a redirected download straight into /usr/local/bin
+	// (the parent dir may be missing, mount may be noexec on first boot, etc.).
+	dl := fmt.Sprintf(`set -e
+mkdir -p /usr/local/bin
+TMP=$(mktemp /tmp/node-agent.XXXXXX)
+curl -fSL --retry 3 --retry-delay 2 -o "$TMP" %q
+install -m 0755 "$TMP" /usr/local/bin/node-agent
+rm -f "$TMP"
+/usr/local/bin/node-agent --help >/dev/null 2>&1 || true
+ls -l /usr/local/bin/node-agent`, r.BinaryURL)
 	if err := run(client, dl, &b); err != nil {
 		return fail("download agent: %v", err)
 	}
