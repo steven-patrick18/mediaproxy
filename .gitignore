@@ -30,3 +30,8 @@ logs/
 # Node (for future web/)
 node_modules/
 dist/
+
+# TypeScript build artifacts
+web/*.tsbuildinfo
+web/vite.config.d.ts
+web/vite.config.js
