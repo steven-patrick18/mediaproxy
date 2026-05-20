@@ -3,6 +3,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Resellers from "./pages/Resellers";
 import Clients from "./pages/Clients";
+import Nodes from "./pages/Nodes";
 import Layout from "./components/Layout";
 import { useAuth } from "./auth";
 
@@ -34,6 +35,7 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="resellers" element={<Resellers />} />
         <Route path="clients" element={<Clients />} />
+        <Route path="nodes" element={<Nodes />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

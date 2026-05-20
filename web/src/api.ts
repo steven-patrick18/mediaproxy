@@ -67,3 +67,16 @@ export interface Client {
   status: string;
   created_at: string;
 }
+export interface MediaNode {
+  id: number;
+  name: string;
+  role: "media" | "sip_proxy";
+  host_ip: string;
+  region: string | null;
+  max_calls: number;
+  transcoding_enabled: boolean;
+  status: "online" | "offline" | "draining";
+  agent_token?: string;
+  last_seen_at: string | null;
+  created_at: string;
+}

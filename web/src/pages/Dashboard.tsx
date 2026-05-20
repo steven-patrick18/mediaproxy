@@ -1,27 +1,32 @@
 import { useEffect, useState } from "react";
-import { api, type Client, type Reseller } from "../api";
+import { api, type Client, type MediaNode, type Reseller } from "../api";
 
 export default function Dashboard() {
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [nodes, setNodes] = useState<MediaNode[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
       api.get<Reseller[]>("/api/v1/resellers"),
       api.get<Client[]>("/api/v1/clients"),
+      api.get<MediaNode[]>("/api/v1/nodes"),
     ])
-      .then(([r, c]) => {
+      .then(([r, c, n]) => {
         setResellers(r);
         setClients(c);
+        setNodes(n);
       })
       .catch((e) => setErr(e.message));
   }, []);
 
+  const onlineNodes = nodes.filter((n) => n.status === "online").length;
+
   const cards = [
     { label: "Resellers", value: resellers.length },
     { label: "Clients", value: clients.length },
-    { label: "Media nodes", value: 0 },
+    { label: "Media nodes", value: `${onlineNodes} / ${nodes.length}` },
     { label: "Active calls", value: 0 },
   ];
 
@@ -59,10 +64,10 @@ export default function Dashboard() {
       <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm">
         <p>Next up on the build plan:</p>
         <ul className="ml-5 mt-2 list-disc space-y-1">
-          <li>Create-reseller and create-client forms</li>
-          <li>IP pool + groups UI</li>
-          <li>Media node registration (Phase 2)</li>
-          <li>Kamailio + RTPEngine wiring</li>
+          <li>Agent daemon on a media node (Go binary, reports + commands)</li>
+          <li>RTPEngine install + kernel module + UDP port range</li>
+          <li>Kamailio install + whitelist + SDP rewrite via RTPEngine</li>
+          <li>End-to-end test call with media IP rotation</li>
         </ul>
       </div>
     </div>

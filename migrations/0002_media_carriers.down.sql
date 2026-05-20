@@ -1,0 +1,10 @@
+BEGIN;
+DROP TABLE IF EXISTS assignments;
+DROP TABLE IF EXISTS routes;
+DROP TABLE IF EXISTS carrier_node_history;
+DROP TABLE IF EXISTS carriers;
+DROP TABLE IF EXISTS ip_group_members;
+DROP TABLE IF EXISTS ip_groups;
+DROP TABLE IF EXISTS node_ips;
+DROP TABLE IF EXISTS media_nodes;
+COMMIT;

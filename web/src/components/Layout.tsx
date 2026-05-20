@@ -24,6 +24,9 @@ export default function Layout() {
           <NavLink to="/" end className={navItem}>
             Dashboard
           </NavLink>
+          <NavLink to="/nodes" className={navItem}>
+            Nodes
+          </NavLink>
           <NavLink to="/resellers" className={navItem}>
             Resellers
           </NavLink>

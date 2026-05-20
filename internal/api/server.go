@@ -31,15 +31,15 @@ func (s *Server) Router() *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	{
-		// Public
 		v1.POST("/auth/login", s.login)
 
-		// Authed
 		authed := v1.Group("")
 		authed.Use(requireAuth(s.deps.JWTSecret))
 		authed.GET("/auth/me", s.me)
 		authed.GET("/resellers", s.listResellers)
 		authed.GET("/clients", s.listClients)
+		authed.GET("/nodes", s.listNodes)
+		authed.POST("/nodes", s.createNode)
 	}
 	return r
 }
