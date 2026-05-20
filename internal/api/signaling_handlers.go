@@ -16,12 +16,13 @@ type SignalingIP struct {
 	SipProxyNodeID   int64     `json:"sip_proxy_node_id"`
 	Status           string    `json:"status"`
 	AssignedClientID *int64    `json:"assigned_client_id,omitempty"`
+	AutoDiscovered   bool      `json:"auto_discovered"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
 func (s *Server) listSignalingIPs(c *gin.Context) {
 	rows, err := s.deps.PG.Query(c.Request.Context(), `
-		SELECT id, host(ip_address), sip_proxy_node_id, status, assigned_client_id, created_at
+		SELECT id, host(ip_address), sip_proxy_node_id, status, assigned_client_id, auto_discovered, created_at
 		  FROM signaling_ips
 		 ORDER BY id
 	`)
@@ -33,7 +34,7 @@ func (s *Server) listSignalingIPs(c *gin.Context) {
 	out := []SignalingIP{}
 	for rows.Next() {
 		var s SignalingIP
-		if err := rows.Scan(&s.ID, &s.IPAddress, &s.SipProxyNodeID, &s.Status, &s.AssignedClientID, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.IPAddress, &s.SipProxyNodeID, &s.Status, &s.AssignedClientID, &s.AutoDiscovered, &s.CreatedAt); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -70,9 +71,9 @@ func (s *Server) createSignalingIP(c *gin.Context) {
 	err := s.deps.PG.QueryRow(c.Request.Context(), `
 		INSERT INTO signaling_ips (ip_address, sip_proxy_node_id, status)
 		VALUES ($1::inet, $2, 'available')
-		RETURNING id, host(ip_address), sip_proxy_node_id, status, assigned_client_id, created_at
+		RETURNING id, host(ip_address), sip_proxy_node_id, status, assigned_client_id, auto_discovered, created_at
 	`, req.IPAddress, req.SipProxyNodeID).Scan(
-		&out.ID, &out.IPAddress, &out.SipProxyNodeID, &out.Status, &out.AssignedClientID, &out.CreatedAt,
+		&out.ID, &out.IPAddress, &out.SipProxyNodeID, &out.Status, &out.AssignedClientID, &out.AutoDiscovered, &out.CreatedAt,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

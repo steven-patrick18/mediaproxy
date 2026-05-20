@@ -58,8 +58,9 @@ export default function SignalingIPs() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Signaling IPs</h2>
           <p className="text-sm text-slate-500">
-            Per-client SIP source IPs. Each client gets one of these; the carrier whitelists the
-            block.
+            Per-client SIP source IPs. IPs bound on a sip_proxy node's NIC are auto-discovered from
+            agent heartbeats; you can also add them manually with the button on the right. Carriers
+            whitelist these IPs on their side.
           </p>
         </div>
         <button
@@ -141,6 +142,7 @@ export default function SignalingIPs() {
               <th className="px-4 py-2">IP</th>
               <th className="px-4 py-2">SIP node</th>
               <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2">Source</th>
               <th className="px-4 py-2">Assigned client</th>
               <th className="px-4 py-2" />
             </tr>
@@ -148,7 +150,7 @@ export default function SignalingIPs() {
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-400">
                   No signaling IPs yet.
                 </td>
               </tr>
@@ -171,6 +173,13 @@ export default function SignalingIPs() {
                   >
                     {s.status}
                   </span>
+                </td>
+                <td className="px-4 py-2 text-xs">
+                  {s.auto_discovered ? (
+                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-800">auto</span>
+                  ) : (
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">manual</span>
+                  )}
                 </td>
                 <td className="px-4 py-2 text-slate-600">
                   {s.assigned_client_id ?? "—"}

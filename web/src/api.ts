@@ -189,6 +189,7 @@ export interface SignalingIP {
   sip_proxy_node_id: number;
   status: "available" | "assigned" | "disabled";
   assigned_client_id?: number | null;
+  auto_discovered?: boolean;
   created_at: string;
 }
 export interface Carrier {
