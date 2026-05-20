@@ -31,9 +31,22 @@ async function request<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  // Tolerate non-JSON responses (e.g. nginx/Gin 404 plaintext bodies) so
+  // we surface a sane error instead of a JSON.parse exception.
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (!res.ok) {
+        throw new ApiError(res.status, text.slice(0, 200).trim() || res.statusText);
+      }
+      throw new ApiError(res.status, `bad JSON from ${path}: ${text.slice(0, 80)}`);
+    }
+  }
   if (!res.ok) {
-    const msg = (data && (data.error || data.message)) || res.statusText;
+    const d = data as { error?: string; message?: string } | null;
+    const msg = (d && (d.error || d.message)) || res.statusText;
     throw new ApiError(res.status, msg);
   }
   return data as T;

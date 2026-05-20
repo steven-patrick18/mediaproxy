@@ -36,7 +36,7 @@ export default function CDRs() {
     dnis: "",
   });
 
-  function qs(): string {
+  function filterParts(): string[] {
     const parts: string[] = [];
     if (filters.client_id) parts.push(`client_id=${filters.client_id}`);
     if (filters.carrier_id) parts.push(`carrier_id=${filters.carrier_id}`);
@@ -44,16 +44,19 @@ export default function CDRs() {
     if (filters.from) parts.push(`from=${encodeURIComponent(filters.from)}`);
     if (filters.to) parts.push(`to=${encodeURIComponent(filters.to)}`);
     if (filters.dnis) parts.push(`dnis=${encodeURIComponent(filters.dnis)}`);
-    return parts.length ? `?${parts.join("&")}` : "";
+    return parts;
   }
 
   const reload = useCallback(async () => {
     setBusy(true);
     setErr(null);
     try {
+      const filters = filterParts();
+      const listURL = `/api/v1/cdrs?${[...filters, "limit=200"].join("&")}`;
+      const statsURL = `/api/v1/cdrs/stats${filters.length ? "?" + filters.join("&") : ""}`;
       const [r, s, c, ca] = await Promise.all([
-        api.get<CDR[]>(`/api/v1/cdrs${qs()}&limit=200`.replace("?&", "?")),
-        api.get<CDRStats>(`/api/v1/cdrs/stats${qs()}`),
+        api.get<CDR[]>(listURL),
+        api.get<CDRStats>(statsURL),
         api.get<Client[]>("/api/v1/clients"),
         api.get<Carrier[]>("/api/v1/carriers"),
       ]);
