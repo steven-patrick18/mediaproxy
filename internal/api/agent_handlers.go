@@ -98,11 +98,12 @@ type agentHeartbeatRequest struct {
 }
 
 type agentCommand struct {
-	ID    string `json:"id"`
-	Type  string `json:"type"`
-	IP    string `json:"ip,omitempty"`
-	CIDR  int    `json:"cidr,omitempty"`
-	Iface string `json:"iface,omitempty"`
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	IP      string          `json:"ip,omitempty"`
+	CIDR    int             `json:"cidr,omitempty"`
+	Iface   string          `json:"iface,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type agentHeartbeatResponse struct {
@@ -225,6 +226,9 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 			}
 			cmd := agentCommand{ID: strconv.FormatInt(cid, 10), Type: ctype}
 			if payload != "" && payload != "{}" {
+				cmd.Payload = json.RawMessage(payload)
+				// Convenience-extract the common shape so existing command
+				// handlers (add_ip / remove_ip) still see populated fields.
 				var p struct {
 					IP    string `json:"ip"`
 					CIDR  int    `json:"cidr"`

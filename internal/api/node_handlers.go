@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -40,6 +41,7 @@ type MediaNode struct {
 	IPsTotal       int      `json:"ips_total"`
 	FirewallAppliedAt *time.Time `json:"firewall_applied_at,omitempty"`
 	SSHAuthMethod  string   `json:"ssh_auth_method"`
+	PasswordAuthEnabled bool   `json:"password_auth_enabled"`
 }
 
 // computedStatus flips a node to "offline" if last_seen_at is older than
@@ -64,7 +66,7 @@ func (s *Server) listNodes(c *gin.Context) {
 		       COALESCE(n.ips_bound, 0),
 		       (SELECT count(*) FROM node_ips      WHERE node_id = n.id) +
 		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total,
-		       n.firewall_applied_at, n.ssh_auth_method
+		       n.firewall_applied_at, n.ssh_auth_method, n.password_auth_enabled
 		  FROM media_nodes n
 		 ORDER BY n.id
 	`
@@ -81,7 +83,7 @@ func (s *Server) listNodes(c *gin.Context) {
 			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
 			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
 			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal, &n.FirewallAppliedAt,
-			&n.SSHAuthMethod); err != nil {
+			&n.SSHAuthMethod, &n.PasswordAuthEnabled); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -309,6 +311,49 @@ func (s *Server) nodeMetrics(c *gin.Context) {
 		out = append(out, p)
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// POST /api/v1/nodes/:id/ssh-config
+//
+// Body: { "password_auth": true|false }
+//
+// Persists the desired state on the node and queues a `set_ssh_auth`
+// command for the agent. The agent edits /etc/ssh/sshd_config, validates
+// with `sshd -t`, then `systemctl reload ssh`. Pubkey auth is always
+// left on so the agent can keep talking to us.
+type setSSHAuthReq struct {
+	PasswordAuth bool `json:"password_auth"`
+}
+
+func (s *Server) setNodeSSHAuth(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req setSSHAuthReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE media_nodes SET password_auth_enabled = $1 WHERE id = $2`,
+		req.PasswordAuth, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	payload, _ := json.Marshal(map[string]bool{"password_auth": req.PasswordAuth})
+	actor, _ := c.Get("user_id")
+	var cmdID int64
+	if err := s.deps.PG.QueryRow(c.Request.Context(), `
+		INSERT INTO node_commands (node_id, type, payload, created_by)
+		VALUES ($1, 'set_ssh_auth', $2::jsonb, $3)
+		RETURNING id
+	`, id, string(payload), actor).Scan(&cmdID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"command_id": cmdID, "desired_state": req.PasswordAuth})
 }
 
 func randomToken(nBytes int) (string, error) {

@@ -25,6 +25,7 @@ type NodeCommand struct {
 var validCommandTypes = map[string]bool{
 	"apply":             true, // force reconcile expected IPs now
 	"apply_firewall":    true, // fetch + apply nftables ruleset with safety rollback
+	"set_ssh_auth":      true, // toggle PasswordAuthentication in sshd_config
 	"reboot":            true, // exec `reboot` on the host
 	"restart_rtpengine": true,
 	"restart_kamailio":  true,

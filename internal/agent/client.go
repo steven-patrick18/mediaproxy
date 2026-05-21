@@ -87,11 +87,12 @@ type HeartbeatReq struct {
 }
 
 type Command struct {
-	ID    string `json:"id"`
-	Type  string `json:"type"`
-	IP    string `json:"ip,omitempty"`
-	CIDR  int    `json:"cidr,omitempty"`
-	Iface string `json:"iface,omitempty"`
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	IP      string          `json:"ip,omitempty"`
+	CIDR    int             `json:"cidr,omitempty"`
+	Iface   string          `json:"iface,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type HeartbeatResp struct {

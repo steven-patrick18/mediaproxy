@@ -82,6 +82,7 @@ func (s *Server) Router() *gin.Engine {
 		a.POST("/nodes/:id/undrain", s.undrainNode)
 		a.GET("/nodes/:id/metrics", s.nodeMetrics)
 		a.POST("/nodes/:id/provision", s.provisionNode)
+		a.POST("/nodes/:id/ssh-config", s.setNodeSSHAuth)
 		a.GET("/nodes/:id/commands", s.listNodeCommands)
 		a.POST("/nodes/:id/commands", s.createNodeCommand)
 
