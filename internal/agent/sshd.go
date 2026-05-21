@@ -12,14 +12,14 @@ import (
 // SetPasswordAuth toggles sshd's PasswordAuthentication directive (and
 // PermitRootLogin) on the host. Strategy:
 //
-//   1. Read /etc/ssh/sshd_config and all /etc/ssh/sshd_config.d/*.conf
-//      (the kernel reads them as a single config; we have to make sure
-//      no later include reverts what we set).
-//   2. Set our desired directives in /etc/ssh/sshd_config.d/99-mediaproxy.conf
-//      (high priority — later filename wins). Disable any conflicting
-//      directives in earlier files by commenting them out only if the
-//      operator specifically asked to enable passwords (otherwise we
-//      respect whatever's there).
+//   1. Write our desired directives to /etc/ssh/sshd_config.d/01-mediaproxy.conf.
+//      OpenSSH uses FIRST-match-wins per directive across drop-in files,
+//      processed in lexical (numerical) order. We sort early (01-) so we
+//      beat distro defaults like 50-cloud-init.conf, which on fresh Ubuntu
+//      cloud images sets PasswordAuthentication=yes and would otherwise
+//      win over a later 99-* file.
+//   2. Clean up any legacy 99-mediaproxy.conf left by older agents so the
+//      two files don't drift.
 //   3. `sshd -t` to syntax-check before reloading.
 //   4. `systemctl reload ssh` to pick up the change without dropping
 //      existing sessions.
@@ -27,7 +27,8 @@ import (
 // PubkeyAuthentication is always set to yes so the agent never locks
 // itself out of an admin's key-based SSH access.
 func SetPasswordAuth(enable bool) error {
-	const dropIn = "/etc/ssh/sshd_config.d/99-mediaproxy.conf"
+	const dropIn = "/etc/ssh/sshd_config.d/01-mediaproxy.conf"
+	const legacyDropIn = "/etc/ssh/sshd_config.d/99-mediaproxy.conf"
 
 	if err := os.MkdirAll("/etc/ssh/sshd_config.d", 0o755); err != nil {
 		return fmt.Errorf("mkdir sshd_config.d: %w", err)
@@ -55,11 +56,9 @@ func SetPasswordAuth(enable bool) error {
 	if err := os.Rename(tmp, dropIn); err != nil {
 		return fmt.Errorf("rename drop-in: %w", err)
 	}
-
-	// On Ubuntu 24.04 there's usually /etc/ssh/sshd_config.d/50-cloud-init.conf
-	// which sets PasswordAuthentication=no — if the operator wants to enable
-	// passwords, our 99-* file wins (last include wins in OpenSSH). No
-	// further edits needed.
+	// Drop any leftover 99-mediaproxy.conf from an older agent build so the
+	// 01-* file is unambiguously authoritative.
+	_ = os.Remove(legacyDropIn)
 
 	// Syntax check.
 	if out, err := exec.Command("sshd", "-t").CombinedOutput(); err != nil {

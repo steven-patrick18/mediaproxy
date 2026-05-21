@@ -10,14 +10,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const baseAppSSHConfigPath = "/etc/ssh/sshd_config.d/99-mediaproxy.conf"
+// OpenSSH uses FIRST-match-wins per directive across drop-ins (processed in
+// lexical order). We sort early so distro defaults like 50-cloud-init.conf
+// don't override us.
+const baseAppSSHConfigPath = "/etc/ssh/sshd_config.d/01-mediaproxy.conf"
+const baseAppLegacyPath = "/etc/ssh/sshd_config.d/99-mediaproxy.conf"
 
 // GET /api/v1/system/ssh — returns the base-app host's effective SSH config.
+// Reads the current drop-in (01-*); falls back to the legacy 99-* path so a
+// just-upgraded host without the new file present doesn't 500.
 func (s *Server) getSystemSSH(c *gin.Context) {
 	body, err := os.ReadFile(baseAppSSHConfigPath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		if legacy, e2 := os.ReadFile(baseAppLegacyPath); e2 == nil {
+			body = legacy
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"password_auth_enabled": strings.Contains(string(body), "PasswordAuthentication yes"),
@@ -60,6 +70,9 @@ func (s *Server) setSystemSSH(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("systemctl reload ssh: %s", strings.TrimSpace(string(out)))})
 		return
 	}
+	// Best-effort cleanup of a legacy 99-* file from an older deploy so it
+	// can't accidentally take precedence in a future reload.
+	_ = exec.Command("sudo", "rm", "-f", baseAppLegacyPath).Run()
 	c.JSON(http.StatusOK, gin.H{
 		"password_auth_enabled": req.PasswordAuth,
 		"applied":               true,
