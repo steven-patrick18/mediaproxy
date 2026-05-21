@@ -78,7 +78,22 @@ func ScanIPs(iface string) ([]string, error) {
 }
 
 // AddIP attaches ip/cidr to iface, treating "already exists" as success.
+//
+// CRITICAL safety guard: refuses to bind an IP that is currently the
+// default-route next-hop ("via" IP). Many cloud / colo providers put the
+// gateway inside the same CIDR block they sell you (e.g. RackNerd gives
+// 67.215.233.64/26 with the gateway at .65). Binding the gateway as a
+// local interface address breaks the default route: outbound packets
+// resolve .65 to ourselves instead of going via the upstream router, and
+// the host drops off the network in milliseconds.
+//
+// This check costs one cheap `ip route show default` invocation and is
+// the difference between "agent works" and "host instantly dies" on
+// every provider where the gateway is in-block.
 func AddIP(iface, ip string, cidr int) error {
+	if gw, _ := defaultGateway(); gw != "" && gw == ip {
+		return fmt.Errorf("refusing to bind %s: it is the default-route gateway", ip)
+	}
 	out, err := exec.Command("ip", "addr", "add", fmt.Sprintf("%s/%d", ip, cidr), "dev", iface).CombinedOutput()
 	if err == nil {
 		return nil
@@ -87,6 +102,28 @@ func AddIP(iface, ip string, cidr int) error {
 		return nil
 	}
 	return fmt.Errorf("ip addr add %s: %w (%s)", ip, err, strings.TrimSpace(string(out)))
+}
+
+// defaultGateway returns the next-hop IP for the IPv4 default route, or
+// "" if there isn't one (or the parse fails). We parse `ip -j route show
+// default` to keep this robust against minor format changes.
+func defaultGateway() (string, error) {
+	out, err := exec.Command("ip", "-j", "route", "show", "default").Output()
+	if err != nil {
+		return "", err
+	}
+	var routes []struct {
+		Gateway string `json:"gateway"`
+	}
+	if err := json.Unmarshal(out, &routes); err != nil {
+		return "", err
+	}
+	for _, r := range routes {
+		if r.Gateway != "" {
+			return r.Gateway, nil
+		}
+	}
+	return "", nil
 }
 
 // RemoveIP detaches ip/cidr from iface, treating "not found" as success.
