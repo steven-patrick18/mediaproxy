@@ -70,11 +70,11 @@ func (a *Agent) tick(ctx context.Context) error {
 	// step. Disabled if AutoClaimMaxPrefix is 0; safe at default 26 because
 	// cloud-VPS shared subnets are /20-/24 which don't trigger.
 	if !a.Cfg.ReadOnly && a.Cfg.AutoClaimMaxPrefix > 0 {
-		if n, err := AutoClaimLocalBlocks(a.Cfg.Iface, a.Cfg.AutoClaimMaxPrefix); err != nil {
+		// AutoClaimLocalBlocks logs its own summary every call, including
+		// when nothing matched (so operators can tell whether the code path
+		// even ran). We only need to surface a hard error here.
+		if _, err := AutoClaimLocalBlocks(a.Cfg.Iface, a.Cfg.AutoClaimMaxPrefix); err != nil {
 			slog.Warn("auto-claim local CIDR blocks failed", "err", err)
-		} else if n > 0 {
-			slog.Info("auto-claimed host IPs from tight CIDR block",
-				"iface", a.Cfg.Iface, "claimed", n, "max_prefix", a.Cfg.AutoClaimMaxPrefix)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os/exec"
 	"strings"
@@ -148,6 +149,9 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 	// block when two addresses sit inside it.
 	seenBlocks := map[string]bool{}
 	claimed := 0
+	candidates := 0
+	failed := 0
+	matchedIfaceEntries := 0
 	for _, l := range links {
 		if l.IfName != iface {
 			continue
@@ -156,6 +160,7 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 			if a.Family != "inet" || a.Local == "" {
 				continue
 			}
+			matchedIfaceEntries++
 			if a.PrefixLen < maxPrefix || a.PrefixLen > 32 {
 				continue
 			}
@@ -165,6 +170,7 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 			cidr := fmt.Sprintf("%s/%d", a.Local, a.PrefixLen)
 			_, network, err := net.ParseCIDR(cidr)
 			if err != nil {
+				slog.Warn("auto-claim: ParseCIDR failed", "cidr", cidr, "err", err)
 				continue
 			}
 			key := network.String()
@@ -172,13 +178,20 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 				continue
 			}
 			seenBlocks[key] = true
-			for _, host := range hostsInCIDR(network) {
+			hosts := hostsInCIDR(network)
+			candidates += len(hosts)
+			for _, host := range hosts {
 				if bound[host] {
 					continue
 				}
 				if err := AddIP(iface, host, a.PrefixLen); err != nil {
-					// Don't abort the pass on a single failure (might be a
-					// gateway IP the host can't claim, etc.). Caller logs.
+					failed++
+					// Log only the first few so we don't flood the log on
+					// genuinely broken setups (e.g. wrong gateway, full ARP
+					// table). The summary at the end carries the count.
+					if failed <= 3 {
+						slog.Warn("auto-claim: AddIP failed", "iface", iface, "ip", host, "prefix", a.PrefixLen, "err", err)
+					}
 					continue
 				}
 				bound[host] = true
@@ -186,6 +199,15 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 			}
 		}
 	}
+	// Always log a one-line summary — even claimed=0 is useful diagnostic info
+	// the first time auto-claim runs on a node. Operators can grep this.
+	slog.Info("auto-claim summary",
+		"iface", iface, "max_prefix", maxPrefix,
+		"iface_entries_matched", matchedIfaceEntries,
+		"blocks_enumerated", len(seenBlocks),
+		"candidates", candidates,
+		"claimed", claimed,
+		"failed", failed)
 	return claimed, nil
 }
 
