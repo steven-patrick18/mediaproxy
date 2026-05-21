@@ -162,6 +162,21 @@ LimitNOFILE=1048576
 TasksMax=infinity
 LIMITS
 			systemctl daemon-reload
+			# Bump UDP socket recv buffer from the kernel default (208 KB)
+			# to 8 MB. With 16 Kamailio workers, each spending ~100-200 ms
+			# in http_async_query per INVITE, the throughput ceiling is
+			# ~150 INVITE/s. Anything above that — even a brief burst —
+			# overflows the default 208 KB socket buffer and the kernel
+			# drops packets at the NIC. We saw this in prod: recv-q pinned
+			# at exactly net.core.rmem_max*2, dialer marked the trunk
+			# UNREACHABLE, calls vanished until kamailio was bounced.
+			# 8 MB = ~5000 SIP packet headroom.
+			cat > /etc/sysctl.d/99-mediaproxy.conf <<'"'"'SYSCTL'"'"'
+net.core.rmem_max = 8388608
+net.core.rmem_default = 1048576
+net.core.netdev_max_backlog = 4096
+SYSCTL
+			sysctl -p /etc/sysctl.d/99-mediaproxy.conf >/dev/null
 		`, &b); err != nil {
 			return fail("kamailio install: %v", err)
 		}
