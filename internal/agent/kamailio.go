@@ -61,20 +61,42 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 	return
 }
 
-// WriteKamailioConfigs writes both files and triggers a graceful reload of
-// kamailio (the unit's ExecReload usually sends SIGUSR1 which re-reads
-// the cfg).
-func WriteKamailioConfigs(listenPath, mainPath, listenCfg, mainCfg string) error {
+// WriteKamailioConfigs writes both files iff their contents differ from
+// what's already on disk. Returns changed=true if either file was actually
+// rewritten, so the caller can decide whether to bounce the service.
+//
+// Why: Kamailio's stock systemd unit doesn't support config reload — every
+// `systemctl reload-or-restart` is a full restart. With heartbeat at 10s
+// the agent was cycling Kamailio every 10s in steady state, which made
+// Asterisk's 5s qualify pings half-miss → trunk marked UNREACHABLE →
+// CHANUNAVAIL on every Dial(). Skipping the write+restart when the
+// content is identical fixes the loop.
+func WriteKamailioConfigs(listenPath, mainPath, listenCfg, mainCfg string) (changed bool, err error) {
 	if err := os.MkdirAll("/etc/kamailio", 0o755); err != nil {
-		return err
+		return false, err
 	}
-	if err := os.WriteFile(listenPath, []byte(listenCfg), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", listenPath, err)
+	listenChanged, err := writeIfChanged(listenPath, listenCfg)
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", listenPath, err)
 	}
-	if err := os.WriteFile(mainPath, []byte(mainCfg), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", mainPath, err)
+	mainChanged, err := writeIfChanged(mainPath, mainCfg)
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", mainPath, err)
 	}
-	return nil
+	return listenChanged || mainChanged, nil
+}
+
+// writeIfChanged compares wanted content to whatever's already on disk and
+// writes only on mismatch. Returns true if a write happened.
+func writeIfChanged(path, wanted string) (bool, error) {
+	existing, err := os.ReadFile(path)
+	if err == nil && string(existing) == wanted {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(wanted), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 const kamailioMainTmpl = `#!KAMAILIO
@@ -150,10 +172,24 @@ modparam("siptrace", "trace_mode", 1)
 
 ####### request route #######
 request_route {
+    xlog("L_NOTICE", "mp-recv: $rm from $si:$sp ruri=$ru\n");
+    # Answer OPTIONS pings FIRST, before any sanity / scanner / rate-limit
+    # checks. Asterisk-based dialers (Vicidial, FreePBX, etc.) use qualify
+    # OPTIONS as their trunk-health probe. If we silently drop these (which
+    # sanity_check will do for any header it doesn't like) Asterisk marks
+    # the peer UNAVAILABLE within seconds and every Dial() returns
+    # CHANUNAVAIL without sending an INVITE. So OPTIONS goes BEFORE
+    # sanity_check.
+    if (is_method("OPTIONS")) {
+        xlog("L_NOTICE", "mp-options: replying 200 to $si\n");
+        sl_send_reply("200","OK");
+        exit;
+    }
+
     # 0. early rejections
     if (!mf_process_maxfwd_header("10")) { sl_send_reply("483","Too Many Hops"); exit; }
     if (!sanity_check()) { exit; }
-    if (!is_method("INVITE|ACK|BYE|CANCEL|OPTIONS")) {
+    if (!is_method("INVITE|ACK|BYE|CANCEL")) {
         sl_send_reply("405","Method Not Allowed"); exit;
     }
 
@@ -174,11 +210,6 @@ request_route {
     if (loose_route()) {
         if (is_method("BYE")) { setflag(1); }
         t_relay();
-        exit;
-    }
-
-    if (is_method("OPTIONS")) {
-        sl_send_reply("200","OK");
         exit;
     }
 

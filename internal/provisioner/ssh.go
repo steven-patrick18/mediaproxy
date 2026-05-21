@@ -118,6 +118,16 @@ func Run(ctx context.Context, r Request) Result {
 	// loop on first boot.
 	switch r.Role {
 	case "sip_proxy":
+		log("Opening UFW for SIP (5060/udp + 5060/tcp)")
+		// Without this, OPTIONS / INVITE inbound get dropped at netfilter
+		// before they reach Kamailio. Asterisk-style dialers then mark the
+		// peer UNREACHABLE within ~10s and every Dial() returns CHANUNAVAIL
+		// without sending an INVITE. Symptom on prod was "9 OPTIONS/sec
+		// arriving, 0 replies going back" — wasted an hour diagnosing.
+		// Bonus: open the high-numbered ports rtpengine uses on the media
+		// node — done in the media branch below.
+		_ = run(client, `ufw allow 5060/udp comment 'SIP-UDP' || true; ufw allow 5060/tcp comment 'SIP-TCP' || true`, &b)
+
 		log("Installing Kamailio (sip_proxy role)")
 		// Ubuntu 24.04 ships Kamailio 5.7.4 in `universe`, which is missing the
 		// http_async_client module entirely (it's separate from main kamailio).
@@ -142,6 +152,12 @@ func Run(ctx context.Context, r Request) Result {
 			return fail("kamailio install: %v", err)
 		}
 	case "media":
+		log("Opening UFW for RTPEngine media ports (30000-60000/udp)")
+		// Match rtpengine.conf's port-min=30000 port-max=60000 range. Same
+		// rationale as sip_proxy: without this, RTP doesn't reach the media
+		// node and you get audio-less calls (or no call at all).
+		_ = run(client, `ufw allow 30000:60000/udp comment 'RTPEngine media' || true`, &b)
+
 		log("Installing RTPEngine (media role)")
 		if err := run(client,
 			`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ngcp-rtpengine-daemon || true && systemctl disable ngcp-rtpengine-daemon || true && systemctl stop ngcp-rtpengine-daemon || true`,

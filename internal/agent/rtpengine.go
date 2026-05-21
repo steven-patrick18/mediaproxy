@@ -44,9 +44,14 @@ func GenRTPEngineConfig(mediaIPs []string) string {
 	return b.String()
 }
 
-func WriteRTPEngineConfig(path, body string) error {
+// WriteRTPEngineConfig writes the rtpengine.conf only if its content
+// differs from disk. Returns changed=true if a write actually happened,
+// so the caller can avoid bouncing rtpengine when there's nothing to do.
+// See WriteKamailioConfigs for the longer rationale — same "every tick
+// is a restart" failure mode.
+func WriteRTPEngineConfig(path, body string) (changed bool, err error) {
 	if err := os.MkdirAll("/etc/rtpengine", 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, []byte(body), 0o644)
+	return writeIfChanged(path, body)
 }

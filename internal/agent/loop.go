@@ -204,22 +204,31 @@ func persistAndServices(cfg *Config, expected []string) {
 	}
 	switch cfg.Role {
 	case "media":
-		// Full rtpengine.conf rewrite + reload-or-restart (idempotent;
-		// reload-or-restart preserves in-flight calls when the daemon
-		// supports SIGUSR1 reload, otherwise systemd does a graceful restart).
+		// Only bounce rtpengine when the config actually changed. Kamailio's
+		// & rtpengine's stock systemd units don't support real reload, so
+		// every reload-or-restart is a full restart — without this guard
+		// the agent would cycle the daemon every heartbeat (~10s) in
+		// steady state and miss every other Asterisk qualify.
 		body := GenRTPEngineConfig(expected)
-		if err := WriteRTPEngineConfig(cfg.RTPEngineConfPath, body); err != nil {
+		changed, err := WriteRTPEngineConfig(cfg.RTPEngineConfPath, body)
+		if err != nil {
 			slog.Error("rtpengine write", "err", err)
-		} else if err := systemctlAction("rtpengine", "reload-or-restart"); err != nil {
-			slog.Warn("rtpengine reload", "err", err)
+		} else if changed {
+			slog.Info("rtpengine config changed, restarting", "ips", len(expected))
+			if err := systemctlAction("rtpengine", "reload-or-restart"); err != nil {
+				slog.Warn("rtpengine reload", "err", err)
+			}
 		}
 	case "sip_proxy":
-		// Full kamailio.cfg + listen.cfg rewrite + reload-or-restart.
 		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID)
-		if err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg); err != nil {
+		changed, err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg)
+		if err != nil {
 			slog.Error("kamailio write", "err", err)
-		} else if err := systemctlAction("kamailio", "reload-or-restart"); err != nil {
-			slog.Warn("kamailio reload", "err", err)
+		} else if changed {
+			slog.Info("kamailio config changed, restarting", "ips", len(expected))
+			if err := systemctlAction("kamailio", "reload-or-restart"); err != nil {
+				slog.Warn("kamailio reload", "err", err)
+			}
 		}
 	}
 }
