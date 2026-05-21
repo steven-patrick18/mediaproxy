@@ -61,7 +61,7 @@ func (s *Server) routeQuality(c *gin.Context) {
 		    count(*) FILTER (WHERE cr.sip_code = 503) AS c503,
 		    count(*) FILTER (WHERE cr.sip_code IS NOT NULL
 		                     AND cr.sip_code NOT IN (200,486,487,480,503)) AS cother,
-		    avg(cr.pdd_ms)::float8 FILTER (WHERE cr.pdd_ms IS NOT NULL) AS avg_pdd,
+		    (avg(cr.pdd_ms) FILTER (WHERE cr.pdd_ms IS NOT NULL))::float8 AS avg_pdd,
 		    percentile_cont(0.95) WITHIN GROUP (ORDER BY cr.pdd_ms)
 		      FILTER (WHERE cr.pdd_ms IS NOT NULL) AS p95_pdd,
 		    count(*) FILTER (WHERE cr.pdd_ms IS NOT NULL) AS pdd_samples,
