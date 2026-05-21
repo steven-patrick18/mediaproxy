@@ -77,9 +77,12 @@ func (s *Server) listNodes(c *gin.Context) {
 		         WHEN n.role = 'media' THEN
 		           (SELECT COUNT(*) FROM active_calls a
 		             JOIN node_ips ni ON ni.ip_address = a.media_ip
-		            WHERE ni.node_id = n.id)
+		            WHERE ni.node_id = n.id
+		              AND a.last_seen_at > now() - interval '2 minutes')
 		         ELSE
-		           (SELECT COUNT(*) FROM active_calls WHERE node_id = n.id)
+		           (SELECT COUNT(*) FROM active_calls
+		            WHERE node_id = n.id
+		              AND last_seen_at > now() - interval '2 minutes')
 		       END::int AS active_calls,
 		       n.cpu_pct, n.ram_pct,
 		       n.net_in_mbps, n.net_out_mbps, n.packet_loss_pct,
