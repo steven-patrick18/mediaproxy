@@ -17,12 +17,20 @@ type nicLink struct {
 	} `json:"addr_info"`
 }
 
-// ScanIPs returns the unique IPv4 addresses currently bound to iface.
-// Some kernels/cloud-init setups report the same address twice (primary +
-// "scope host" secondary), so we dedup and skip loopback / link-local /
-// any unparsable entry to keep the report clean.
+// ScanIPs returns every unique IPv4 address bound on the host, across all
+// interfaces. We deliberately scan everything (not just iface) because cloud
+// providers commonly attach "extra IP" blocks to a second NIC — restricting
+// the scan to one iface silently hid those IPs from the control plane.
+//
+// The iface argument is kept for the AddIP / RemoveIP reconcile path; ScanIPs
+// itself ignores it. If iface is non-empty we still use it as a *preference*:
+// IPs on that interface come first in the result list, so the operator's
+// "primary" iface remains the conventional default in reports.
+//
+// We dedup (some kernels report the same address twice as primary + "scope
+// host" secondary) and skip loopback / link-local.
 func ScanIPs(iface string) ([]string, error) {
-	out, err := exec.Command("ip", "-j", "addr", "show", "dev", iface).Output()
+	out, err := exec.Command("ip", "-j", "addr", "show").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ip addr show: %w", err)
 	}
@@ -31,8 +39,14 @@ func ScanIPs(iface string) ([]string, error) {
 		return nil, fmt.Errorf("parse ip json: %w", err)
 	}
 	seen := map[string]struct{}{}
-	addrs := []string{}
+	primary := []string{}
+	rest := []string{}
 	for _, l := range links {
+		// Skip loopback by name as well — some kernels report 'lo' with
+		// nothing in addr_info, others list 127.0.0.1.
+		if l.IfName == "lo" {
+			continue
+		}
 		for _, a := range l.AddrInfo {
 			if a.Family != "inet" {
 				continue
@@ -48,10 +62,14 @@ func ScanIPs(iface string) ([]string, error) {
 				continue
 			}
 			seen[a.Local] = struct{}{}
-			addrs = append(addrs, a.Local)
+			if iface != "" && l.IfName == iface {
+				primary = append(primary, a.Local)
+			} else {
+				rest = append(rest, a.Local)
+			}
 		}
 	}
-	return addrs, nil
+	return append(primary, rest...), nil
 }
 
 // AddIP attaches ip/cidr to iface, treating "already exists" as success.
