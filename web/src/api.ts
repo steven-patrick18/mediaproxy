@@ -123,6 +123,9 @@ export interface ActiveCallRow {
   started_at: string;
   last_seen_at: string;
   duration_sec: number;
+  media_transport?: string | null;
+  media_endpoint_ip?: string | null;
+  crypto_suite?: string | null;
 }
 export interface ClientDetail extends Client {
   signaling_ip_id: number | null;

@@ -200,10 +200,15 @@ route[ROUTE_REPLY] {
     rtpengine_manage("replace-origin replace-session-connection out-iface=" + $var(m_ip));
 
     # 4. notify the control plane: call-start
+    # SDP body is base64-encoded so we don't have to JSON-escape newlines,
+    # quotes, slashes. The base64 alphabet is JSON-string-safe by itself.
+    # Backend decodes + parses m= transport, c= endpoint, a=crypto: suite
+    # for the Privacy Monitor.
+    $var(sdp_b64) = $(rb{s.encode.b64});
     $var(start_body) = "{\"call_id\":\"" + $ci + "\",\"client_id\":" + $var(client_id)
         + ",\"carrier_id\":" + $var(carrier_id) + ",\"media_ip\":\"" + $var(m_ip)
         + "\",\"signaling_from\":\"" + $var(sig_ip) + "\",\"ani\":\"" + $fU
-        + "\",\"dnis\":\"" + $rU + "\"}";
+        + "\",\"dnis\":\"" + $rU + "\",\"sdp_b64\":\"" + $var(sdp_b64) + "\"}";
     $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", $var(start_body), "CALL_START_REPLY");
 

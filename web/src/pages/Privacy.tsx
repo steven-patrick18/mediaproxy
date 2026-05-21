@@ -13,10 +13,32 @@ import Help from "../components/Help";
 //     carrier's network. That carrier *can* record audio.
 //   - "Private" = a direct peer-to-peer media leg with no carrier middle-
 //     box. Almost never exists in conventional SIP trunking.
-//   - "Encryption known" requires SDP capture (RTP/AVP vs RTP/SAVP). That
-//     capture isn't wired up yet, so we show "unknown" rather than guess.
+//   - SDP capture is enabled in the kamailio template, so "Encrypted?"
+//     and "Crypto suite" reflect real per-call values. SDES-SRTP is still
+//     decryptable by a carrier in the signaling path (key exchange in
+//     cleartext) — flagged separately from DTLS-SRTP in the UI.
 
 type Severity = "exposed" | "private" | "unknown";
+
+// describeTransport classifies an SDP m= transport into a friendly label
+// + the underlying privacy implication. This is the single source of truth
+// the UI uses for every "Encrypted?" cell.
+function describeTransport(t: string | null | undefined): { label: string; tone: string; carrierCanHear: boolean } {
+  if (!t) return { label: "Unknown", tone: "text-slate-500", carrierCanHear: true };
+  switch (t.toUpperCase()) {
+    case "RTP/AVP":
+    case "RTP/AVPF":
+      return { label: "No (plain RTP)", tone: "text-rose-700", carrierCanHear: true };
+    case "RTP/SAVP":
+    case "RTP/SAVPF":
+      return { label: "SDES-SRTP", tone: "text-amber-700", carrierCanHear: true };
+    case "UDP/TLS/RTP/SAVP":
+    case "UDP/TLS/RTP/SAVPF":
+      return { label: "DTLS-SRTP", tone: "text-emerald-700", carrierCanHear: false };
+    default:
+      return { label: t, tone: "text-slate-600", carrierCanHear: true };
+  }
+}
 
 interface CarrierRow {
   id: number;
@@ -24,6 +46,7 @@ interface CarrierRow {
   status: string;
   count: number;
   severity: Severity;
+  transport: string | null;
 }
 
 export default function Privacy() {
@@ -60,29 +83,57 @@ export default function Privacy() {
   const carrierName = (id: number | null | undefined) =>
     id ? carriers.find((c) => c.id === id)?.name ?? `#${id}` : "—";
 
-  // Aggregate per carrier. Every active call that has a carrier_id is
-  // considered "exposed" because, architecturally, its RTP flows through
-  // that carrier's media gateway. Calls with no carrier_id are skipped
-  // (these would be administrative / OPTIONS / etc).
+  // Aggregate per carrier. We also track the dominant transport per carrier
+  // (most common across that carrier's active calls) so the table can show
+  // whether the leg is plain RTP, SDES-SRTP, or DTLS-SRTP.
   const perCarrier: CarrierRow[] = useMemo(() => {
     const counts = new Map<number, number>();
+    const transports = new Map<number, Map<string, number>>();
     for (const r of active) {
-      if (r.carrier_id) counts.set(r.carrier_id, (counts.get(r.carrier_id) ?? 0) + 1);
+      if (!r.carrier_id) continue;
+      counts.set(r.carrier_id, (counts.get(r.carrier_id) ?? 0) + 1);
+      const tkey = (r.media_transport ?? "unknown").toUpperCase();
+      let m = transports.get(r.carrier_id);
+      if (!m) {
+        m = new Map();
+        transports.set(r.carrier_id, m);
+      }
+      m.set(tkey, (m.get(tkey) ?? 0) + 1);
     }
-    const list: CarrierRow[] = carriers.map((c) => ({
-      id: c.id,
-      name: c.name,
-      status: c.status,
-      count: counts.get(c.id) ?? 0,
-      severity: "exposed" as Severity,
-    }));
+    const list: CarrierRow[] = carriers.map((c) => {
+      let dominantTransport: string | null = null;
+      const m = transports.get(c.id);
+      if (m) {
+        let best = 0;
+        for (const [k, v] of m) {
+          if (v > best) {
+            best = v;
+            dominantTransport = k === "UNKNOWN" ? null : k;
+          }
+        }
+      }
+      return {
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        count: counts.get(c.id) ?? 0,
+        severity: "exposed" as Severity,
+        transport: dominantTransport,
+      };
+    });
     list.sort((a, b) => b.count - a.count);
     return list;
   }, [active, carriers]);
 
   const totalCalls = active.length;
-  const exposedCalls = active.filter((r) => !!r.carrier_id).length;
-  const privateCalls = 0; // Always 0 until media-bypass is implemented; honest 0 beats a fake number.
+  // A call is only "private" if its negotiated transport is DTLS-SRTP AND
+  // the media goes direct (no carrier). For wholesale traffic this stays 0;
+  // we don't fake it.
+  const privateCalls = active.filter((r) => {
+    const t = describeTransport(r.media_transport);
+    return !r.carrier_id && !t.carrierCanHear;
+  }).length;
+  const exposedCalls = totalCalls - privateCalls;
   const exposedPct = totalCalls > 0 ? Math.round((exposedCalls / totalCalls) * 100) : 0;
 
   const overallStatus =
@@ -212,6 +263,7 @@ export default function Privacy() {
               )}
               {perCarrier.map((c) => {
                 const sev: Severity = c.count === 0 ? "unknown" : "exposed";
+                const t = describeTransport(c.transport);
                 return (
                   <tr key={c.id}>
                     <td className="px-3 py-2 font-medium">{c.name}</td>
@@ -219,15 +271,13 @@ export default function Privacy() {
                     <td className="px-3 py-2 text-xs">
                       {c.count === 0 ? (
                         <span className="text-slate-400">—</span>
+                      ) : t.carrierCanHear ? (
+                        <span className="text-rose-700">YES — carrier in audio path</span>
                       ) : (
-                        <span className="text-rose-700">YES — all pass through them</span>
+                        <span className="text-emerald-700">No — DTLS-SRTP end-to-end</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      <span className="text-slate-500" title="Encryption status requires SDP capture, not yet enabled">
-                        Unknown
-                      </span>
-                    </td>
+                    <td className={`px-3 py-2 text-xs font-medium ${t.tone}`}>{t.label}</td>
                     <td className="px-3 py-2">{severityBadge(sev)}</td>
                   </tr>
                 );
@@ -251,36 +301,42 @@ export default function Privacy() {
                 <th className="px-3 py-2">Company</th>
                 <th className="px-3 py-2">Client</th>
                 <th className="px-3 py-2">From → To</th>
+                <th className="px-3 py-2">Transport</th>
                 <th className="px-3 py-2">Can hear?</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {liveFeed.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                     No live calls right now.
                   </td>
                 </tr>
               )}
-              {liveFeed.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-3 py-1.5 text-xs text-slate-500">
-                    {new Date(r.started_at).toLocaleTimeString()}
-                  </td>
-                  <td className="px-3 py-1.5">{carrierName(r.carrier_id)}</td>
-                  <td className="px-3 py-1.5">{clientName(r.client_id)}</td>
-                  <td className="px-3 py-1.5 font-mono text-xs">
-                    {r.ani ?? "?"} → {r.dnis ?? "?"}
-                  </td>
-                  <td className="px-3 py-1.5 text-xs">
-                    {r.carrier_id ? (
-                      <span className="text-rose-700">🔴 Yes — passes through carrier</span>
-                    ) : (
-                      <span className="text-slate-500">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {liveFeed.map((r) => {
+                const t = describeTransport(r.media_transport);
+                const carrierCanHear = !!r.carrier_id || t.carrierCanHear;
+                return (
+                  <tr key={r.id}>
+                    <td className="px-3 py-1.5 text-xs text-slate-500">
+                      {new Date(r.started_at).toLocaleTimeString()}
+                    </td>
+                    <td className="px-3 py-1.5">{carrierName(r.carrier_id)}</td>
+                    <td className="px-3 py-1.5">{clientName(r.client_id)}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs">
+                      {r.ani ?? "?"} → {r.dnis ?? "?"}
+                    </td>
+                    <td className={`px-3 py-1.5 text-xs font-medium ${t.tone}`}>{t.label}</td>
+                    <td className="px-3 py-1.5 text-xs">
+                      {carrierCanHear ? (
+                        <span className="text-rose-700">🔴 Yes</span>
+                      ) : (
+                        <span className="text-emerald-700">🟢 No — direct + DTLS-SRTP</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -291,13 +347,39 @@ export default function Privacy() {
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
           Watch out (alerts, last 15 min)
         </h3>
-        <div className="mt-3 rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-          No alerts.
-          <p className="mt-2 text-xs text-slate-400">
-            Mid-call re-routing alerts and unencrypted-call warnings require SDP capture in the
-            Kamailio call-start hook. Not enabled yet — when it is, alerts will surface here.
-          </p>
-        </div>
+        {(() => {
+          const plainCalls = active.filter((r) => {
+            const t = describeTransport(r.media_transport);
+            return t.label.includes("plain");
+          });
+          if (plainCalls.length === 0) {
+            return (
+              <div className="mt-3 rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No alerts.
+                <p className="mt-2 text-xs text-slate-400">
+                  Alerts appear here when a call is negotiated with plain RTP (no encryption) or
+                  when an active call's media endpoint is renegotiated mid-call. Mid-call
+                  renegotiation detection still needs to be added separately.
+                </p>
+              </div>
+            );
+          }
+          return (
+            <ul className="mt-3 space-y-2">
+              {plainCalls.slice(0, 10).map((r) => (
+                <li
+                  key={r.id}
+                  className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                >
+                  🟠 {new Date(r.started_at).toLocaleTimeString()} ·{" "}
+                  <strong>{carrierName(r.carrier_id)}</strong> — call{" "}
+                  <code className="font-mono text-xs">{r.call_id.slice(0, 12)}…</code> negotiated
+                  with <strong>plain RTP</strong> (no encryption). Audio is open on the wire.
+                </li>
+              ))}
+            </ul>
+          );
+        })()}
       </section>
 
       {/* Section 5 — What this means */}
@@ -314,10 +396,12 @@ export default function Privacy() {
             architectural <em>exposure</em>, never proof of actual recording.
           </li>
           <li>
-            <strong>SRTP / encryption</strong> labels will be filled in once we capture SDP in the
-            call-start hook. Note: SDES-SRTP (the common flavor in SIP trunks) exchanges keys in
-            cleartext signaling — a carrier in the signaling path can still decrypt. Only
-            DTLS-SRTP with verified fingerprints actually blinds the carrier.
+            <strong>Encryption labels are real now</strong> — Kamailio captures SDP on every
+            INVITE and the panel parses out the <code>m=</code> transport and{" "}
+            <code>a=crypto:</code> suite. Note: <strong>SDES-SRTP</strong> (the common flavor in
+            SIP trunks) exchanges keys in cleartext signaling — a carrier in the signaling path
+            can still decrypt. Only <strong>DTLS-SRTP</strong> with verified fingerprints
+            actually blinds the carrier; the page marks those rows green.
           </li>
           <li>
             <strong>"Private" calls (peer-to-peer media bypass)</strong> are zero on a conventional
