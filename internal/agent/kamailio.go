@@ -358,12 +358,15 @@ modparam("htable", "htable", "pdd=>size=10;autoexpire=120")
 # autoexpire=300 = 5 min (longer than any plausible setup+ringing time).
 modparam("htable", "htable", "call=>size=12;autoexpire=300")
 # capacity: short-lived "system at capacity" flag. /route returns 503
-# when all media IPs are at max_calls; we set capacity[src_ip] for 1s
-# so subsequent INVITEs from the same dialer get an immediate 503
-# (mapped to CONGESTION by Asterisk-based dialers) without the HTTP
-# round-trip to /route. Keyed on dialer src IP so different clients
-# don t affect each other.
-modparam("htable", "htable", "capacity=>size=8;autoexpire=1")
+# when all media IPs are at max_calls; we stamp the flag here and
+# subsequent INVITEs get an immediate 503 (CONGESTION on Asterisk-
+# based dialers) without the HTTP round-trip to /route. Keyed by
+# this proxy s signaling IP (= the "to" address dialer sees) because
+# Vicidial-style dialers use many source IPs but always target the
+# same SipProxy address — a per-src-IP flag was never seen twice
+# inside its 1s TTL. autoexpire=2 = 2-second hold, long enough for
+# IPs to free up but short enough to recover quickly.
+modparam("htable", "htable", "capacity=>size=8;autoexpire=2")
 # rcache: in-process cache of /route responses. Key = "<dialer_ip>:<6-digit DNIS prefix>"
 # Value = the JSON body from /api/v1/agent/route. TTL is short (config-driven, default 5s)
 # so routing changes propagate quickly while still absorbing burst load. Without this
@@ -495,13 +498,14 @@ request_route {
         exit;
     }
 
-    # Fast capacity reject. If /route returned 503 ("no media IP
-    # available") for this dialer in the last ~1 second, we re still at
-    # capacity — short-circuit with 503 here instead of paying the HTTP
-    # round-trip just to be told 503 again. Asterisk-based dialers map
-    # 503 to CONGESTION, which is the right semantic for "node full".
-    if (is_method("INVITE") && $sht(capacity=>$si) != $null) {
-        xlog("L_NOTICE", "mp-capacity-rejected: $si\n");
+    # Fast capacity reject. /route stamps capacity[$Ri] when it returns
+    # 503 ("no media IP available"). $Ri is the local interface IP the
+    # INVITE landed on — same for every dialer source, so a single 503
+    # from any client triggers fast-reject for ALL incoming INVITEs to
+    # that signaling IP for the next ~2s. Way more effective than a
+    # per-source key when the dialer rotates source IPs.
+    if (is_method("INVITE") && $sht(capacity=>$Ri) != $null) {
+        xlog("L_NOTICE", "mp-capacity-rejected: from=$si to=$Ri\n");
         sl_send_reply("503","Capacity exhausted");
         exit;
     }
@@ -575,11 +579,12 @@ route[ROUTE_REPLY] {
             # which is exactly what we want.
             case 486: sl_send_reply("486","Busy Here"); break;
             case 503:
-                # Stamp the capacity flag so the NEXT INVITE from this
-                # dialer in the next ~1s rejects locally without paying
-                # another HTTP round-trip. Auto-expires from htable, so
-                # the system self-recovers as soon as IPs free up.
-                $sht(capacity=>$si) = 1;
+                # Stamp capacity[$Ri] — keyed on this proxy s landing IP,
+                # so ALL incoming INVITEs to this signaling IP get fast-
+                # rejected for the next ~2s. Vicidial-style dialers
+                # rotate source IPs, so a per-src key was never re-hit
+                # inside its TTL.
+                $sht(capacity=>$Ri) = 1;
                 sl_send_reply("503","Service Unavailable");
                 break;
             default:  sl_send_reply("500","Routing Error");
