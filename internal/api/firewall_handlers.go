@@ -271,6 +271,23 @@ func (s *Server) renderFirewallPreviewFor(c *gin.Context, id int64) {
 		}
 	}
 
+	// For media nodes, also pull every active sip_proxy management IP so
+	// kamailio on the proxy can reach rtpengine's NG control socket
+	// (UDP/2223) without being dropped by the default-drop policy.
+	var sipProxyIPs []string
+	if role == "media" {
+		if rows, err := s.deps.PG.Query(c.Request.Context(),
+			`SELECT host(host_ip) FROM media_nodes WHERE role = 'sip_proxy' AND status != 'disabled'`); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var ip string
+				if rows.Scan(&ip) == nil && ip != "" {
+					sipProxyIPs = append(sipProxyIPs, ip)
+				}
+			}
+		}
+	}
+
 	// Render
 	cfg := firewall.Render(firewall.NodeContext{
 		NodeID:      id,
@@ -281,6 +298,7 @@ func (s *Server) renderFirewallPreviewFor(c *gin.Context, id int64) {
 		SIPPort:     5060,
 		RTPLow:      30000,
 		RTPHigh:     60000,
+		SipProxyIPs: sipProxyIPs,
 	}, rendererRules, autoRules)
 
 	c.JSON(http.StatusOK, FirewallPreview{

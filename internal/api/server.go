@@ -43,6 +43,7 @@ func (s *Server) Router() *gin.Engine {
 		agent.POST("/firewall-applied", s.agentFirewallApplied)
 		agent.POST("/call-start", s.callStart)
 		agent.POST("/call-progress", s.callProgress)
+		agent.POST("/call-reinvite", s.callReinvite)
 		agent.POST("/call-quality", s.callQuality)
 		agent.POST("/call-end", s.callEnd)
 		// Kamailio's http_async_query carries the agent's bearer token; the
@@ -130,11 +131,13 @@ func (s *Server) Router() *gin.Engine {
 		// Assignments
 		a.GET("/assignments", s.listAssignments)
 		a.POST("/assignments", s.createAssignment)
+		a.PATCH("/assignments/:id", s.patchAssignment)
 		a.DELETE("/assignments/:id", s.endAssignment)
 
 		// CDRs + active calls
 		a.GET("/cdrs", s.listCDRs)
 		a.GET("/cdrs/stats", s.cdrStats)
+		a.GET("/cdrs/:call_id/sip-trace", s.cdrSipTrace)
 		a.GET("/calls/active", s.listActiveCalls)
 		a.GET("/route-quality", s.routeQuality)
 
@@ -143,6 +146,9 @@ func (s *Server) Router() *gin.Engine {
 		a.POST("/admin-users", s.createAdminUser)
 		a.PATCH("/admin-users/:id", s.patchAdminUser)
 		a.DELETE("/admin-users/:id", s.deleteAdminUser)
+
+		// Destructive admin actions (typed-confirmation gated)
+		a.POST("/admin/reset", s.adminReset)
 
 		// Firewall (panel-managed; preview only — no auto-apply yet)
 		a.GET("/firewall/rules", s.listFirewallRules)

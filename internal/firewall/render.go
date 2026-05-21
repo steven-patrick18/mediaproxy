@@ -42,6 +42,12 @@ type NodeContext struct {
 	SIPPort     int      // 5060 typically
 	RTPLow      int      // 30000
 	RTPHigh     int      // 60000
+	// SipProxyIPs: management IPs of every active sip_proxy node. Used on
+	// media-role render to whitelist UDP/2223 (rtpengine NG control) from
+	// those sources, so kamailio on the SipProxy can reach this MediaNode's
+	// rtpengine. Without this, calls relay signaling fine but media never
+	// negotiates because rtpengine_manage() in kamailio gets no reply.
+	SipProxyIPs []string
 }
 
 // Render produces a complete nftables config as a single string.
@@ -165,6 +171,19 @@ func Render(ctx NodeContext, rules []Rule, autoRules []AutoRule) string {
 	if ctx.Role == "media" {
 		fmt.Fprintf(&b, "    # RTP media range — RTPEngine validates per-call membership; firewall only opens the port range.\n")
 		fmt.Fprintf(&b, "    udp dport %d-%d accept comment \"rtp\"\n\n", ctx.RTPLow, ctx.RTPHigh)
+
+		// rtpengine NG control socket. Allow only from known sip_proxy
+		// mgmt IPs. If no sip_proxy nodes exist yet, emit a comment
+		// instead of an empty allowlist that would no-op.
+		sortedSP := append([]string(nil), ctx.SipProxyIPs...)
+		sort.Strings(sortedSP)
+		if len(sortedSP) > 0 {
+			fmt.Fprintf(&b, "    # rtpengine NG control (UDP/2223) from sip_proxy nodes\n")
+			fmt.Fprintf(&b, "    udp dport 2223 ip saddr { %s } accept comment \"rtpengine NG from sip_proxy\"\n\n",
+				strings.Join(sortedSP, ", "))
+		} else {
+			fmt.Fprintf(&b, "    # rtpengine NG (2223): no sip_proxy nodes registered yet, nothing to allow\n\n")
+		}
 	}
 
 	fmt.Fprintf(&b, "    # Anything else → drop (implicit by policy drop above)\n")

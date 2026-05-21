@@ -148,6 +148,20 @@ func Run(ctx context.Context, r Request) Result {
 				kamailio kamailio-tls-modules kamailio-utils-modules kamailio-extra-modules kamailio-json-modules
 			systemctl disable kamailio || true
 			systemctl stop kamailio || true
+			# Bump Kamailio s systemd resource limits. Defaults of NPROC=64k +
+			# NOFILE=512k were tight enough that under sustained load (~50 req/s
+			# of http_async_query out to the control plane) libcurl's threaded
+			# resolver failed with "getaddrinfo() thread failed to start",
+			# dropping ~12% of INVITEs. The override file makes the limits
+			# generous and survives package upgrades.
+			mkdir -p /etc/systemd/system/kamailio.service.d
+			cat > /etc/systemd/system/kamailio.service.d/limits.conf <<'"'"'LIMITS'"'"'
+[Service]
+LimitNPROC=65536
+LimitNOFILE=1048576
+TasksMax=infinity
+LIMITS
+			systemctl daemon-reload
 		`, &b); err != nil {
 			return fail("kamailio install: %v", err)
 		}
@@ -159,10 +173,45 @@ func Run(ctx context.Context, r Request) Result {
 		_ = run(client, `ufw allow 30000:60000/udp comment 'RTPEngine media' || true`, &b)
 
 		log("Installing RTPEngine (media role)")
-		if err := run(client,
-			`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ngcp-rtpengine-daemon || true && systemctl disable ngcp-rtpengine-daemon || true && systemctl stop ngcp-rtpengine-daemon || true`,
-			&b); err != nil {
-			log("WARNING: rtpengine install (it's in apt for some Ubuntu+sury repos only; you may need to add a repo): %v", err)
+		// Ubuntu 24.04 ships `rtpengine` in universe (NOT `ngcp-rtpengine-daemon`
+		// — that's Sipwise's Debian package name and isn't in stock apt). Older
+		// versions of this provisioner used the wrong package name with `|| true`
+		// which silently fell off, leaving the box with rtpengine.conf written
+		// but no daemon to run it. Wasted hours diagnosing audio that wasn't
+		// flowing on a "successfully provisioned" node.
+		//
+		// We install + enable + start the daemon here so the agent has rtpengine
+		// running by the time it begins its first heartbeat. The agent's tick
+		// will reload-or-restart it whenever the .conf file actually changes.
+		//
+		// The rtpengine package also installs an iptables INPUT rule that
+		// matches ALL UDP and hands it to the in-kernel module — fine for RTP,
+		// but it swallows our NG control packets on UDP/2223 too. We add an
+		// ACCEPT rule BEFORE the rtpengine chain so kamailio's NG queries reach
+		// userspace. Persist via iptables-persistent so the rule survives reboots
+		// AND the `rtpengine-iptables-setup start` hook that runs on every
+		// service restart (which otherwise re-inserts the catch-all on top).
+		if err := run(client, `
+			set -e
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rtpengine
+			# Enable the daemon — Ubuntu's unit is "rtpengine-daemon.service".
+			# The mediaproxy agent's loop.go targets exactly this unit name.
+			systemctl enable rtpengine-daemon
+			# Don't start yet — the agent will write rtpengine.conf on its first
+			# tick and start the daemon after the config exists. Pre-creating the
+			# rtpengine kernel iptables hook is fine to do now though.
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent netfilter-persistent
+			# Insert an ACCEPT for the NG control port at position 1, BEFORE the
+			# rtpengine chain. Idempotent: delete any existing copy first.
+			while iptables -L INPUT -n --line-numbers 2>/dev/null | grep -q "ACCEPT.*udp dpt:2223.*rtpengine NG"; do
+				LINE=$(iptables -L INPUT -n --line-numbers | grep "ACCEPT.*udp dpt:2223.*rtpengine NG" | head -1 | awk '{print $1}')
+				iptables -D INPUT $LINE
+			done
+			iptables -I INPUT 1 -p udp --dport 2223 -j ACCEPT -m comment --comment "rtpengine NG control passthrough"
+			mkdir -p /etc/iptables
+			iptables-save > /etc/iptables/rules.v4
+		`, &b); err != nil {
+			return fail("rtpengine install/setup: %v", err)
 		}
 	}
 
@@ -184,6 +233,24 @@ ls -l /usr/local/bin/node-agent`, r.BinaryURL)
 	}
 
 	log("Writing /etc/node-agent/config.yaml")
+	// Split-host rtpengine wiring: media nodes listen on a publicly-reachable
+	// address so the SipProxy can issue NG commands; sip_proxy nodes are told
+	// where to connect. If the operator runs single-host (rtpengine on the
+	// SipProxy itself), the defaults already point at 127.0.0.1:2223 — no
+	// override needed in that case.
+	var rtpengineExtras string
+	switch r.Role {
+	case "media":
+		// Bind the NG control socket on all interfaces. The firewall
+		// renderer separately allows UDP/2223 only from registered
+		// sip_proxy node IPs, so this is safe.
+		rtpengineExtras = "rtpengine_ng_listen: \"0.0.0.0:2223\"\n"
+	case "sip_proxy":
+		// Operator must edit this AFTER first media node is registered;
+		// the agent ships a sane default and the panel surfaces a hint
+		// when this is still pointing at localhost on a multi-host setup.
+		rtpengineExtras = "# rtpengine_sock: \"udp:<MEDIA_NODE_HOST_IP>:2223\"  # set to point at your media node\n"
+	}
 	yaml := fmt.Sprintf(`node_id: %d
 role: %s
 control_plane_url: %s
@@ -200,7 +267,7 @@ heartbeat_seconds: 10
 # add IPs UI is the safer path — it goes through the throttled reconcile.
 auto_claim_max_prefix: -1
 protect_ips: ["%s"]
-`, r.NodeID, r.Role, r.ControlPlaneURL, r.AgentToken, "eth0", r.Host)
+%s`, r.NodeID, r.Role, r.ControlPlaneURL, r.AgentToken, "eth0", r.Host, rtpengineExtras)
 	// Detect the primary iface — replace eth0 with whatever the box uses.
 	if name, err := primaryIface(client); err == nil && name != "" {
 		yaml = strings.Replace(yaml, "iface: eth0", "iface: "+name, 1)

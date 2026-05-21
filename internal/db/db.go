@@ -14,8 +14,14 @@ func NewPostgres(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	cfg.MaxConns = 20
-	cfg.MinConns = 2
+	// MaxConns was 20 — under real call load (~17 INVITEs/s × 4 PG
+	// touches per /route + concurrent /call-start, /call-end, /heartbeat,
+	// /firewall, panel queries) it was the bottleneck causing
+	// http_async_query timeouts in Kamailio and ~12-17% call drop.
+	// 100 gives ~5× headroom; Postgres can handle far more, this just
+	// caps concurrent backends to avoid noisy-neighbor on tiny VMs.
+	cfg.MaxConns = 100
+	cfg.MinConns = 10
 	cfg.MaxConnLifetime = time.Hour
 	cfg.MaxConnIdleTime = 15 * time.Minute
 
