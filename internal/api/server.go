@@ -47,7 +47,7 @@ func (s *Server) Router() *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	{
-		v1.POST("/auth/login", s.login)
+		v1.POST("/auth/login", loginRateLimit(s.deps.Redis), s.login)
 
 		a := v1.Group("")
 		a.Use(requireAuth(s.deps.JWTSecret))

@@ -9,6 +9,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -168,9 +169,15 @@ func Resolve(ctx context.Context, pg *pgxpool.Pool, srcIP, dnis string) (*Decisi
 	default: // round_robin
 		idx := cursor % len(cands)
 		chosen = cands[idx]
-		_, _ = pg.Exec(ctx,
+		if _, err := pg.Exec(ctx,
 			`UPDATE assignments SET rotation_cursor = ($1 + 1) WHERE id = $2`,
-			cursor, assignID)
+			cursor, assignID); err != nil {
+			// If the cursor doesn't advance, round_robin degenerates to
+			// "always pick IP 0" — surface loudly so we catch DB issues
+			// before they distort traffic distribution.
+			slog.Error("router: rotation_cursor update failed",
+				"assignment_id", assignID, "cursor", cursor, "err", err)
+		}
 	}
 
 	return &Decision{

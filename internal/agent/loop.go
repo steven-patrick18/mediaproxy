@@ -72,9 +72,20 @@ func (a *Agent) tick(ctx context.Context) error {
 	}
 	snap := a.sampler.Sample()
 
+	// Only media nodes run rtpengine; querying on a sip_proxy would just
+	// hit a closed UDP port and waste a second per heartbeat.
+	activeCalls := 0
+	if a.Cfg.Role == "media" {
+		if n, err := QueryRTPEngineSessions(); err != nil {
+			slog.Debug("rtpengine session query failed", "err", err)
+		} else {
+			activeCalls = n
+		}
+	}
+
 	hb, err := a.API.Heartbeat(ctx, HeartbeatReq{
 		BoundIPs:      bound,
-		ActiveCalls:   0, // TODO: query rtpengine when role=media
+		ActiveCalls:   activeCalls,
 		CPUPct:        snap.CPUPct,
 		RAMPct:        snap.RAMPct,
 		NetInMbps:     snap.NetInMbps,

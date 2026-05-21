@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,9 +65,13 @@ func (s *Server) agentRegister(c *gin.Context) {
 	role := c.GetString("agent_node_role")
 
 	var req agentRegisterRequest
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Old agents may post extra fields; tolerate but log so we notice
+		// a true schema mismatch.
+		slog.Warn("agent register: body bind failed", "node_id", nodeID, "err", err)
+	}
 
-	_, _ = s.deps.PG.Exec(c.Request.Context(), `
+	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE media_nodes
 		   SET cpu_cores         = COALESCE(NULLIF($2, 0), cpu_cores),
 		       ram_gb            = COALESCE(NULLIF($3, 0), ram_gb),
@@ -75,7 +80,9 @@ func (s *Server) agentRegister(c *gin.Context) {
 		       last_seen_at      = now(),
 		       status            = CASE WHEN status = 'draining' THEN 'draining' ELSE 'online' END
 		 WHERE id = $1
-	`, nodeID, req.Cores, req.RAMMB/1024, req.RTPEngineVersion, req.AgentVersion)
+	`, nodeID, req.Cores, req.RAMMB/1024, req.RTPEngineVersion, req.AgentVersion); err != nil {
+		slog.Error("agent register: update media_nodes failed", "node_id", nodeID, "err", err)
+	}
 
 	expected, err := s.expectedIPs(c.Request.Context(), nodeID, role)
 	if err != nil {
@@ -116,7 +123,9 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 	role := c.GetString("agent_node_role")
 
 	var req agentHeartbeatRequest
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Warn("agent heartbeat: body bind failed", "node_id", nodeID, "err", err)
+	}
 
 	// Defensive dedup: older agents (or weird kernel/cloud-init setups)
 	// can report the same IP twice in bound_ips. Track unique entries so
@@ -160,11 +169,13 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 	}
 
 	// Append a time-series row.
-	_, _ = s.deps.PG.Exec(c.Request.Context(), `
+	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		INSERT INTO node_metrics (node_id, active_calls, cpu_pct, ram_pct,
 		                          net_in_mbps, net_out_mbps, packet_loss_pct)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct, req.NetInMbps, req.NetOutMbps, req.PacketLossPct)
+	`, nodeID, req.ActiveCalls, req.CPUPct, req.RAMPct, req.NetInMbps, req.NetOutMbps, req.PacketLossPct); err != nil {
+		slog.Error("heartbeat: append node_metrics failed", "node_id", nodeID, "err", err)
+	}
 
 	// Auto-discover every IP reported by the agent. The operator can later
 	// disable IPs they don't want to use (e.g. the host's management IP)
@@ -173,28 +184,34 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 	switch role {
 	case "media":
 		for _, ip := range req.BoundIPs {
-			_, _ = s.deps.PG.Exec(c.Request.Context(), `
+			if _, err := s.deps.PG.Exec(c.Request.Context(), `
 				INSERT INTO node_ips (node_id, ip_address, status, auto_discovered)
 				VALUES ($1, $2::inet, 'active', true)
 				ON CONFLICT (ip_address) DO UPDATE
 				   SET node_id = EXCLUDED.node_id,
 				       last_health_check = now()
-			`, nodeID, ip)
+			`, nodeID, ip); err != nil {
+				slog.Error("heartbeat: upsert node_ips failed", "node_id", nodeID, "ip", ip, "err", err)
+			}
 		}
 	case "sip_proxy":
 		for _, ip := range req.BoundIPs {
-			_, _ = s.deps.PG.Exec(c.Request.Context(), `
+			if _, err := s.deps.PG.Exec(c.Request.Context(), `
 				INSERT INTO signaling_ips (ip_address, sip_proxy_node_id, status, auto_discovered)
 				VALUES ($2::inet, $1, 'available', true)
 				ON CONFLICT (ip_address) DO UPDATE
 				   SET sip_proxy_node_id = EXCLUDED.sip_proxy_node_id
-			`, nodeID, ip)
+			`, nodeID, ip); err != nil {
+				slog.Error("heartbeat: upsert signaling_ips failed", "node_id", nodeID, "ip", ip, "err", err)
+			}
 		}
 	}
 
 	// Touch last_health_check on IPs the agent is currently binding.
-	_, _ = s.deps.PG.Exec(c.Request.Context(),
-		`UPDATE node_ips SET last_health_check = now() WHERE node_id = $1`, nodeID)
+	if _, err := s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE node_ips SET last_health_check = now() WHERE node_id = $1`, nodeID); err != nil {
+		slog.Error("heartbeat: touch node_ips.last_health_check failed", "node_id", nodeID, "err", err)
+	}
 
 	expected, err := s.expectedIPs(c.Request.Context(), nodeID, role)
 	if err != nil {
@@ -268,11 +285,13 @@ func (s *Server) agentCommandResult(c *gin.Context) {
 	if req.Status == "error" {
 		finalStatus = "error"
 	}
-	_, _ = s.deps.PG.Exec(c.Request.Context(), `
+	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE node_commands
 		   SET status = $3, detail = NULLIF($4, ''), completed_at = now()
 		 WHERE id = $1 AND node_id = $2
-	`, cmdID, nodeID, finalStatus, req.Detail)
+	`, cmdID, nodeID, finalStatus, req.Detail); err != nil {
+		slog.Error("command-result: update node_commands failed", "cmd_id", cmdID, "node_id", nodeID, "err", err)
+	}
 	c.Status(http.StatusNoContent)
 }
 

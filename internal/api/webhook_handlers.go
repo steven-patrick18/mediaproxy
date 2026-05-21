@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -175,11 +176,13 @@ func (s *Server) queueWebhookEventByID(ctx context.Context, id int64, event stri
 // The background worker picks them up.
 func (s *Server) QueueWebhookEvent(ctx context.Context, event string, payload any) {
 	body, _ := json.Marshal(payload)
-	_, _ = s.deps.PG.Exec(ctx, `
+	if _, err := s.deps.PG.Exec(ctx, `
 		INSERT INTO webhook_deliveries (webhook_id, event, payload)
 		SELECT id, $1, $2::jsonb FROM webhooks
 		 WHERE enabled = true AND $1 = ANY(events)
-	`, event, body)
+	`, event, body); err != nil {
+		slog.Error("webhook: queue insert failed", "event", event, "err", err)
+	}
 }
 
 func (s *Server) listWebhookDeliveries(c *gin.Context) {
@@ -274,17 +277,21 @@ func (s *Server) deliverPendingWebhooks(ctx context.Context) {
 	for _, j := range jobs {
 		err := postWebhook(j.url, j.secret, j.event, j.body)
 		if err == nil {
-			_, _ = s.deps.PG.Exec(ctx,
-				`UPDATE webhook_deliveries SET status = 'success', delivered_at = now(), attempts = attempts + 1 WHERE id = $1`, j.id)
+			if _, e := s.deps.PG.Exec(ctx,
+				`UPDATE webhook_deliveries SET status = 'success', delivered_at = now(), attempts = attempts + 1 WHERE id = $1`, j.id); e != nil {
+				slog.Error("webhook: mark success failed (will re-deliver)", "delivery_id", j.id, "err", e)
+			}
 		} else {
 			status := "retrying"
 			if j.attempts+1 >= 5 {
 				status = "failed"
 			}
 			msg := err.Error()
-			_, _ = s.deps.PG.Exec(ctx,
+			if _, e := s.deps.PG.Exec(ctx,
 				`UPDATE webhook_deliveries SET status = $2, attempts = attempts + 1, last_error = $3 WHERE id = $1`,
-				j.id, status, msg)
+				j.id, status, msg); e != nil {
+				slog.Error("webhook: mark retrying/failed update failed", "delivery_id", j.id, "err", e)
+			}
 		}
 	}
 }

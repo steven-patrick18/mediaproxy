@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -40,8 +41,13 @@ func (s *Server) callStart(c *gin.Context) {
 		return
 	}
 	if req.MediaIP != "" {
-		_, _ = s.deps.PG.Exec(c.Request.Context(),
-			`UPDATE node_ips SET current_calls = current_calls + 1 WHERE ip_address = $1::inet`, req.MediaIP)
+		if _, err := s.deps.PG.Exec(c.Request.Context(),
+			`UPDATE node_ips SET current_calls = current_calls + 1 WHERE ip_address = $1::inet`, req.MediaIP); err != nil {
+			// Counter drift will bypass max_calls cap until next reconcile —
+			// loud log so ops can spot DB hiccups before they distort routing.
+			slog.Error("call-start: bump node_ips.current_calls failed",
+				"err", err, "call_id", req.CallID, "media_ip", req.MediaIP, "node_id", nodeID)
+		}
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -117,8 +123,11 @@ func (s *Server) callEnd(c *gin.Context) {
 		return
 	}
 	if mediaIP != nil && *mediaIP != "" {
-		_, _ = s.deps.PG.Exec(c.Request.Context(),
-			`UPDATE node_ips SET current_calls = GREATEST(current_calls - 1, 0) WHERE host(ip_address) = $1`, *mediaIP)
+		if _, err := s.deps.PG.Exec(c.Request.Context(),
+			`UPDATE node_ips SET current_calls = GREATEST(current_calls - 1, 0) WHERE host(ip_address) = $1`, *mediaIP); err != nil {
+			slog.Error("call-end: decrement node_ips.current_calls failed",
+				"err", err, "call_id", req.CallID, "media_ip", *mediaIP, "node_id", nodeID)
+		}
 	}
 	c.Status(http.StatusNoContent)
 }
