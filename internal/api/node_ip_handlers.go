@@ -221,6 +221,77 @@ func (s *Server) patchNodeIP(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// POST /api/v1/node-ips/bulk-update
+//
+// Apply the same set of fields to many node_ips rows in one shot. Used by
+// the IP Pool page's "Bulk apply" button (operators routinely want to set
+// max_calls or status across all 60+ IPs on a freshly-imported block).
+//
+// Filters narrow the affected rows. node_id is required (you can't bulk-
+// update across multiple nodes — different nodes belong to different
+// operators/regions). status_filter optionally restricts to one state.
+//
+// At least one of max_calls / new_status must be set or we return 400
+// (otherwise it's a no-op and the operator likely meant to do something).
+type bulkUpdateNodeIPsRequest struct {
+	NodeID       int64   `json:"node_id" binding:"required,gt=0"`
+	StatusFilter string  `json:"status_filter"` // "" = all states
+	MaxCalls     *int    `json:"max_calls"`
+	NewStatus    *string `json:"new_status"`
+}
+
+func (s *Server) bulkUpdateNodeIPs(c *gin.Context) {
+	var req bulkUpdateNodeIPsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.MaxCalls == nil && req.NewStatus == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "specify at least one of max_calls or new_status"})
+		return
+	}
+	if req.MaxCalls != nil && *req.MaxCalls < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_calls must be >= 0"})
+		return
+	}
+	if req.NewStatus != nil {
+		switch *req.NewStatus {
+		case "active", "disabled", "flagged", "reserve":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "new_status must be active/reserve/flagged/disabled"})
+			return
+		}
+	}
+	if req.StatusFilter != "" {
+		switch req.StatusFilter {
+		case "active", "disabled", "flagged", "reserve":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "status_filter must be active/reserve/flagged/disabled or omitted"})
+			return
+		}
+	}
+
+	// We always want the same UPDATE shape regardless of which fields the
+	// caller wants to change. COALESCE(NULLIF(...), col) gives "set if
+	// provided, otherwise leave alone" for each column.
+	var statusFilter *string
+	if req.StatusFilter != "" {
+		statusFilter = &req.StatusFilter
+	}
+	tag, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE node_ips
+		   SET max_calls = COALESCE($3, max_calls),
+		       status    = COALESCE($4, status)
+		 WHERE node_id   = $1
+		   AND ($2::text IS NULL OR status = $2)
+	`, req.NodeID, statusFilter, req.MaxCalls, req.NewStatus)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": tag.RowsAffected()})
+}
+
 func (s *Server) deleteNodeIP(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {

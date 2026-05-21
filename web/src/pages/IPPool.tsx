@@ -32,6 +32,18 @@ export default function IPPool() {
   });
   const [bulkResult, setBulkResult] = useState<string | null>(null);
 
+  // Bulk-apply modal state (sets max_calls / status across many IPs at once)
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [applyForm, setApplyForm] = useState({
+    node_id: 0,
+    status_filter: "active" as "active" | "reserve" | "flagged" | "disabled" | "all",
+    set_max_calls: true,
+    max_calls: 30,
+    set_status: false,
+    new_status: "active" as NodeIP["status"],
+  });
+  const [applyResult, setApplyResult] = useState<string | null>(null);
+
   const reload = useCallback(() => {
     Promise.all([
       api.get<NodeIP[]>(`/api/v1/node-ips${filter ? `?node_id=${filter}` : ""}`),
@@ -97,6 +109,45 @@ export default function IPPool() {
       reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "patch failed");
+    }
+  }
+
+  function openApply() {
+    setApplyForm({
+      node_id: filter || mediaNodes[0]?.id || 0,
+      status_filter: "active",
+      set_max_calls: true,
+      max_calls: 30,
+      set_status: false,
+      new_status: "active",
+    });
+    setApplyResult(null);
+    setApplyOpen(true);
+  }
+  async function submitApply() {
+    if (!applyForm.node_id) {
+      setErr("Pick a media node first.");
+      return;
+    }
+    if (!applyForm.set_max_calls && !applyForm.set_status) {
+      setErr("Tick at least one of 'set max_calls' or 'set status'.");
+      return;
+    }
+    setErr(null);
+    setBusy(true);
+    setApplyResult(null);
+    try {
+      const body: Record<string, unknown> = { node_id: applyForm.node_id };
+      if (applyForm.status_filter !== "all") body.status_filter = applyForm.status_filter;
+      if (applyForm.set_max_calls) body.max_calls = applyForm.max_calls;
+      if (applyForm.set_status) body.new_status = applyForm.new_status;
+      const res = await api.post<{ updated: number }>("/api/v1/node-ips/bulk-update", body);
+      setApplyResult(`Updated ${res.updated} IP${res.updated === 1 ? "" : "s"}.`);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "bulk apply failed");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -171,6 +222,14 @@ export default function IPPool() {
         <div className="flex gap-2">
           <button onClick={reload} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50">
             <RefreshIcon /> Refresh
+          </button>
+          <button
+            onClick={openApply}
+            disabled={mediaNodes.length === 0 || rows.length === 0}
+            className="inline-flex items-center gap-1.5 rounded-md border border-brand-300 px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-50 disabled:opacity-50"
+            title="Apply max_calls or status to many IPs at once"
+          >
+            Bulk apply
           </button>
           <button
             onClick={openBulk}
@@ -476,6 +535,133 @@ export default function IPPool() {
           {bulkResult && (
             <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
               {bulkResult}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={applyOpen}
+        title="Bulk apply settings to many IPs"
+        onClose={() => setApplyOpen(false)}
+        width="max-w-2xl"
+        footer={
+          <>
+            <button onClick={() => setApplyOpen(false)} className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100">
+              {applyResult ? "Close" : "Cancel"}
+            </button>
+            {!applyResult && (
+              <button onClick={submitApply} disabled={busy} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60">
+                {busy ? "Applying…" : "Apply to selection"}
+              </button>
+            )}
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">
+            Update <code>max_calls</code> and/or <code>status</code> across many IPs at once.
+            Saves a lot of clicking when a freshly-imported block needs a per-IP cap.
+          </p>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                Target media node
+              </label>
+              <select
+                value={applyForm.node_id}
+                onChange={(e) => setApplyForm({ ...applyForm, node_id: Number(e.target.value) })}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+              >
+                {mediaNodes.length === 0 && <option value={0}>no media nodes</option>}
+                {mediaNodes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name} ({n.host_ip})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                Apply only to IPs in status
+                <Help>
+                  Restrict the update to IPs in a specific state. "All states" hits every IP
+                  on that node regardless. Pick <strong>active</strong> for the most common
+                  case (set the cap on your usable pool).
+                </Help>
+              </label>
+              <select
+                value={applyForm.status_filter}
+                onChange={(e) => setApplyForm({ ...applyForm, status_filter: e.target.value as typeof applyForm.status_filter })}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="all">all states</option>
+                <option value="active">active</option>
+                <option value="reserve">reserve</option>
+                <option value="flagged">flagged</option>
+                <option value="disabled">disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3">
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={applyForm.set_max_calls}
+                onChange={(e) => setApplyForm({ ...applyForm, set_max_calls: e.target.checked })}
+                className="mt-1"
+              />
+              <div className="flex-1">
+                <div className="font-medium text-slate-700">
+                  Set max calls per IP
+                  <Help>
+                    Hard cap on simultaneous calls per IP. Common picks:
+                    <strong> 30</strong> for G.711 media (most setups),
+                    <strong> 20</strong> for transcoded G.729,
+                    <strong> 0</strong> for "no per-IP cap" (the node's <code>max_calls</code>
+                    is then the only ceiling).
+                  </Help>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  value={applyForm.max_calls}
+                  onChange={(e) => setApplyForm({ ...applyForm, max_calls: Number(e.target.value) })}
+                  disabled={!applyForm.set_max_calls}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-100"
+                />
+              </div>
+            </label>
+
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={applyForm.set_status}
+                onChange={(e) => setApplyForm({ ...applyForm, set_status: e.target.checked })}
+                className="mt-1"
+              />
+              <div className="flex-1">
+                <div className="font-medium text-slate-700">Change status</div>
+                <select
+                  value={applyForm.new_status}
+                  onChange={(e) => setApplyForm({ ...applyForm, new_status: e.target.value as NodeIP["status"] })}
+                  disabled={!applyForm.set_status}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-100"
+                >
+                  <option value="active">active</option>
+                  <option value="reserve">reserve</option>
+                  <option value="flagged">flagged</option>
+                  <option value="disabled">disabled</option>
+                </select>
+              </div>
+            </label>
+          </div>
+
+          {applyResult && (
+            <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              {applyResult}
             </div>
           )}
         </div>

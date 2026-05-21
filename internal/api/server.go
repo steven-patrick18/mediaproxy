@@ -95,6 +95,7 @@ func (s *Server) Router() *gin.Engine {
 		a.GET("/node-ips", s.listNodeIPs)
 		a.POST("/node-ips", s.createNodeIP)
 		a.POST("/node-ips/bulk", s.bulkCreateNodeIPs)
+		a.POST("/node-ips/bulk-update", s.bulkUpdateNodeIPs)
 		a.PATCH("/node-ips/:id", s.patchNodeIP)
 		a.DELETE("/node-ips/:id", s.deleteNodeIP)
 
