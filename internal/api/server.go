@@ -82,7 +82,6 @@ func (s *Server) Router() *gin.Engine {
 		a.POST("/nodes/:id/undrain", s.undrainNode)
 		a.GET("/nodes/:id/metrics", s.nodeMetrics)
 		a.POST("/nodes/:id/provision", s.provisionNode)
-		a.POST("/nodes/:id/ssh-config", s.setNodeSSHAuth)
 		a.GET("/nodes/:id/commands", s.listNodeCommands)
 		a.POST("/nodes/:id/commands", s.createNodeCommand)
 
@@ -162,10 +161,6 @@ func (s *Server) Router() *gin.Engine {
 		a.DELETE("/webhooks/:id", s.deleteWebhook)
 		a.POST("/webhooks/:id/test", s.testWebhook)
 		a.GET("/webhooks/:id/deliveries", s.listWebhookDeliveries)
-
-		// Base-app system controls (SSH password auth toggle for this host).
-		a.GET("/system/ssh", s.getSystemSSH)
-		a.POST("/system/ssh", s.setSystemSSH)
 	}
 	return r
 }

@@ -70,29 +70,6 @@ function NodeCard({
       onError(e instanceof Error ? e.message : `${label} failed`);
     }
   }
-  async function togglePasswordAuth() {
-    const desired = !n.password_auth_enabled;
-    if (desired) {
-      if (!confirm(
-        `Allow SSH password login on ${n.name}?\n\n` +
-          "The agent will edit /etc/ssh/sshd_config.d/99-mediaproxy.conf:\n" +
-          "  PasswordAuthentication yes\n  PermitRootLogin yes\n\n" +
-          "Pubkey auth stays on. Make sure your root password is strong — anyone who has it could SSH in."
-      )) return;
-    } else {
-      if (!confirm(
-        `Disable SSH password login on ${n.name}?\n\n` +
-          "Only SSH-key auth will work after this. Confirm a working key is in /root/.ssh/authorized_keys " +
-          "first or you'll be locked out (the Vultr web console can rescue you)."
-      )) return;
-    }
-    try {
-      await api.post(`/api/v1/nodes/${n.id}/ssh-config`, { password_auth: desired });
-      onAction();
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "ssh toggle failed");
-    }
-  }
   async function drain() {
     if (!confirm(`Drain node ${n.name}? It will stop accepting new calls.`)) return;
     try {
@@ -187,17 +164,6 @@ function NodeCard({
         </button>
         <button onClick={() => cmd("reboot", "Reboot")} className="rounded border border-red-300 px-2 py-1 text-red-700 hover:bg-red-50">
           Reboot
-        </button>
-        <button
-          onClick={togglePasswordAuth}
-          className={
-            n.password_auth_enabled
-              ? "rounded border border-amber-300 px-2 py-1 text-amber-800 hover:bg-amber-50"
-              : "rounded border border-slate-300 px-2 py-1 text-slate-600 hover:bg-slate-100"
-          }
-          title={n.password_auth_enabled ? "Password SSH is ON — click to disable" : "Password SSH is OFF — click to enable"}
-        >
-          SSH password: {n.password_auth_enabled ? "on" : "off"}
         </button>
         <span className="ml-auto">
           {n.status === "draining" ? (

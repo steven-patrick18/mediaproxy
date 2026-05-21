@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"runtime"
@@ -219,20 +218,6 @@ func (a *Agent) runCommand(ctx context.Context, cmd Command) {
 			status, detail = "error", err.Error()
 		} else {
 			detail = msg
-		}
-	case "set_ssh_auth":
-		var p struct {
-			PasswordAuth bool `json:"password_auth"`
-		}
-		_ = json.Unmarshal(cmd.Payload, &p)
-		if err := SetPasswordAuth(p.PasswordAuth); err != nil {
-			status, detail = "error", err.Error()
-		} else {
-			state := "no"
-			if p.PasswordAuth {
-				state = "yes"
-			}
-			detail = "PasswordAuthentication=" + state + " applied, sshd reloaded"
 		}
 	case "restart_rtpengine":
 		if err := systemctlAction("rtpengine", "restart"); err != nil {
