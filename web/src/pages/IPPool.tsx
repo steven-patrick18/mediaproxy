@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type MediaNode, type NodeIP } from "../api";
 import Modal from "../components/Modal";
 import Help from "../components/Help";
-import { PencilIcon, TrashIcon, RefreshIcon } from "../components/Icons";
+import { PencilIcon, TrashIcon, RefreshIcon, PlusIcon } from "../components/Icons";
 
 export default function IPPool() {
   const [rows, setRows] = useState<NodeIP[]>([]);
@@ -19,6 +19,18 @@ export default function IPPool() {
     max_calls: 0,
   });
   const [busy, setBusy] = useState(false);
+
+  // Bulk-add modal state
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkForm, setBulkForm] = useState({
+    node_id: 0,
+    mode: "cidr" as "cidr" | "list",
+    cidr: "",
+    ips: "",
+    purchased_from: "",
+    lease_block: "",
+  });
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     Promise.all([
@@ -88,6 +100,63 @@ export default function IPPool() {
     }
   }
 
+  function openBulk() {
+    setBulkForm({
+      node_id: mediaNodes[0]?.id ?? 0,
+      mode: "cidr",
+      cidr: "",
+      ips: "",
+      purchased_from: "",
+      lease_block: "",
+    });
+    setBulkResult(null);
+    setBulkOpen(true);
+  }
+  async function submitBulk() {
+    if (!bulkForm.node_id) {
+      setErr("Pick a media node first.");
+      return;
+    }
+    setErr(null);
+    setBusy(true);
+    setBulkResult(null);
+    try {
+      const body: Record<string, unknown> = { node_id: bulkForm.node_id };
+      if (bulkForm.mode === "cidr") {
+        if (!bulkForm.cidr.trim()) {
+          throw new Error("CIDR is required (e.g. 67.215.233.64/26)");
+        }
+        body.cidr = bulkForm.cidr.trim();
+      } else {
+        // Split on whitespace, comma, semicolon — accept anything reasonable.
+        const list = bulkForm.ips
+          .split(/[\s,;]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (list.length === 0) {
+          throw new Error("Paste at least one IP address.");
+        }
+        body.ips = list;
+      }
+      if (bulkForm.purchased_from) body.purchased_from = bulkForm.purchased_from;
+      if (bulkForm.lease_block) body.lease_block = bulkForm.lease_block;
+      const res = await api.post<{ created: number; skipped: number; total: number }>(
+        "/api/v1/node-ips/bulk",
+        body,
+      );
+      setBulkResult(
+        `Imported ${res.created} new IP${res.created === 1 ? "" : "s"}` +
+          (res.skipped > 0 ? `, skipped ${res.skipped} duplicate${res.skipped === 1 ? "" : "s"}` : "") +
+          ". Agent will bind them on its next heartbeat (~10s).",
+      );
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "bulk add failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <header className="flex items-start justify-between">
@@ -99,9 +168,19 @@ export default function IPPool() {
             from this page.
           </p>
         </div>
-        <button onClick={reload} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50">
-          <RefreshIcon /> Refresh
-        </button>
+        <div className="flex gap-2">
+          <button onClick={reload} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50">
+            <RefreshIcon /> Refresh
+          </button>
+          <button
+            onClick={openBulk}
+            disabled={mediaNodes.length === 0}
+            className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-brand-700 disabled:opacity-50"
+            title={mediaNodes.length === 0 ? "Add a media node first" : "Bulk-add IPs to a media node"}
+          >
+            <PlusIcon /> Bulk add IPs
+          </button>
+        </div>
       </header>
 
       {err && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>}
@@ -251,6 +330,154 @@ export default function IPPool() {
               </p>
             </div>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={bulkOpen}
+        title="Bulk add IPs to a media node"
+        onClose={() => setBulkOpen(false)}
+        width="max-w-2xl"
+        footer={
+          <>
+            <button onClick={() => setBulkOpen(false)} className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100">
+              {bulkResult ? "Close" : "Cancel"}
+            </button>
+            {!bulkResult && (
+              <button onClick={submitBulk} disabled={busy} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60">
+                {busy ? "Importing…" : "Import"}
+              </button>
+            )}
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">
+            Register IPs your cloud provider has allocated to a media node. The agent
+            on that node will call <code className="font-mono">ip addr add</code> for
+            every new IP on its primary interface and write a managed netplan file so
+            they persist across reboots. No SSH required — happens on the next heartbeat
+            (~10 seconds).
+          </p>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-500">
+              Target media node
+              <Help>
+                IPs are registered to a single node. The agent on that node binds them.
+                Only nodes with <code>role=media</code> appear here.
+              </Help>
+            </label>
+            <select
+              value={bulkForm.node_id}
+              onChange={(e) => setBulkForm({ ...bulkForm, node_id: Number(e.target.value) })}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            >
+              {mediaNodes.length === 0 && <option value={0}>no media nodes</option>}
+              {mediaNodes.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.name} ({n.host_ip})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-500">
+              Input mode
+              <Help>
+                <strong>CIDR</strong> — expand a whole block (e.g.
+                <code className="font-mono"> 67.215.233.64/26</code> = 62 usable IPs).
+                Use this when your provider gave you a contiguous block.
+                <br /><br />
+                <strong>List</strong> — paste a list of individual IPs
+                (one per line, or comma/space separated). Use this for scattered IPs.
+              </Help>
+            </label>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setBulkForm({ ...bulkForm, mode: "cidr" })}
+                className={`flex-1 rounded border px-3 py-1.5 text-sm ${bulkForm.mode === "cidr" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+              >
+                CIDR block
+              </button>
+              <button
+                type="button"
+                onClick={() => setBulkForm({ ...bulkForm, mode: "list" })}
+                className={`flex-1 rounded border px-3 py-1.5 text-sm ${bulkForm.mode === "list" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+              >
+                Paste IP list
+              </button>
+            </div>
+          </div>
+
+          {bulkForm.mode === "cidr" ? (
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                CIDR block
+                <Help>
+                  Standard notation. The handler skips network + broadcast addresses
+                  automatically, so a <code>/26</code> gives you 62 usable hosts.
+                  Examples: <code>67.215.233.64/26</code>, <code>192.0.2.0/28</code>.
+                </Help>
+              </label>
+              <input
+                value={bulkForm.cidr}
+                onChange={(e) => setBulkForm({ ...bulkForm, cidr: e.target.value })}
+                placeholder="67.215.233.64/26"
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm"
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                IP addresses
+              </label>
+              <textarea
+                rows={8}
+                value={bulkForm.ips}
+                onChange={(e) => setBulkForm({ ...bulkForm, ips: e.target.value })}
+                placeholder={"67.215.233.65\n67.215.233.66\n67.215.233.67\n..."}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                One per line, or comma/space separated. Whitespace ignored.
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                Purchased from (optional)
+                <Help>Free-text source tag. E.g. "Vultr", "IPXO", "AWS BYO".</Help>
+              </label>
+              <input
+                value={bulkForm.purchased_from}
+                onChange={(e) => setBulkForm({ ...bulkForm, purchased_from: e.target.value })}
+                placeholder="Vultr"
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500">
+                Lease block (optional)
+              </label>
+              <input
+                value={bulkForm.lease_block}
+                onChange={(e) => setBulkForm({ ...bulkForm, lease_block: e.target.value })}
+                placeholder="67.215.233.64/26"
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm"
+              />
+            </div>
+          </div>
+
+          {bulkResult && (
+            <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              {bulkResult}
+            </div>
+          )}
         </div>
       </Modal>
     </div>
