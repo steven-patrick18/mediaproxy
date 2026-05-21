@@ -17,11 +17,22 @@ import (
 // where a remote SipProxy must connect, pass an externally reachable
 // address (e.g. "0.0.0.0:2223" + firewall restriction).
 //
+// portMin/portMax: UDP port window for media. 30000-60000 (default)
+// gives 30k ports = ~7.5k concurrent calls (4 ports per call). For
+// higher per-node concurrency expand to 1024-65535 (~15k concurrent).
+// Zero values mean "use defaults".
+//
 // We deliberately overwrite the whole file — running it through systemd
 // reload picks up the new interface set without dropping in-flight calls.
-func GenRTPEngineConfig(mediaIPs []string, ngListen string) string {
+func GenRTPEngineConfig(mediaIPs []string, ngListen string, portMin, portMax int) string {
 	if ngListen == "" {
 		ngListen = "127.0.0.1:2223"
+	}
+	if portMin <= 0 {
+		portMin = 30000
+	}
+	if portMax <= 0 {
+		portMax = 60000
 	}
 	uniq := make([]string, 0, len(mediaIPs))
 	seen := map[string]struct{}{}
@@ -54,8 +65,8 @@ func GenRTPEngineConfig(mediaIPs []string, ngListen string) string {
 		fmt.Fprintln(&b, "# (no managed IPs yet — set 'interface =' once they appear)")
 	}
 	fmt.Fprintf(&b, "listen-ng = %s\n", ngListen)
-	fmt.Fprintln(&b, "port-min = 30000")
-	fmt.Fprintln(&b, "port-max = 60000")
+	fmt.Fprintf(&b, "port-min = %d\n", portMin)
+	fmt.Fprintf(&b, "port-max = %d\n", portMax)
 	fmt.Fprintln(&b, "log-level = 6")
 	fmt.Fprintln(&b, "table = 0")
 	fmt.Fprintln(&b, "tos = 184")

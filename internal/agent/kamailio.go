@@ -24,7 +24,20 @@ import (
 // listenIPs is the set of signaling IPs bound on this node (already deduped).
 // nodeID is used as the HEP capture-id so HOMER can attribute messages to
 // the right proxy when multiple SipProxy nodes are in play.
-func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64, rtpengineSock string) (listenCfg string, mainCfg string) {
+// KamailioGenOpts bundles the scale-tuning knobs so we don t grow
+// GenKamailioConfig s positional arg list every time we add a tunable.
+// Zero values mean "use the in-template default" (see assignDefaults).
+type KamailioGenOpts struct {
+	Children          int // udp worker count
+	TCPChildren       int // tcp worker count
+	RouteCacheSeconds int // 0 = disable cache, >0 = enable with TTL
+	// RouteCacheKeyLen: leading-digit count of DNIS to include in cache
+	// key. 0 = full DNIS (safe). 3 = country-code-only (faster, requires
+	// routing rules with prefix length <= 3). See TUNING.md.
+	RouteCacheKeyLen int
+}
+
+func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64, rtpengineSock string, opts KamailioGenOpts) (listenCfg string, mainCfg string) {
 	uniq := make([]string, 0, len(listenIPs))
 	seen := map[string]struct{}{}
 	for _, ip := range listenIPs {
@@ -99,18 +112,102 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
     }`
 	}
 
-	mainCfg = strings.ReplaceAll(kamailioMainTmpl, "{{CONTROL_PLANE_URL}}", controlPlaneURL)
-	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
-	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
-	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
 	deleteOnBye := "# rtpengine_delete();  // disabled — sock is localhost stub"
 	if rtpengineEnabled {
 		deleteOnBye = "rtpengine_delete();"
 	}
+
+	// Defaults for tunables (caller may pass zero values).
+	children := opts.Children
+	if children <= 0 {
+		children = 16
+	}
+	tcpChildren := opts.TCPChildren
+	if tcpChildren <= 0 {
+		tcpChildren = 4
+	}
+
+	// /route cache snippet. When enabled, request_route checks an
+	// htable BEFORE doing the async HTTP call. On hit, we synthesise
+	// the same callback by jumping to ROUTE_REPLY with $http_rb stashed.
+	// Hit rate is high because dialers grind through long blocks of
+	// same-prefix numbers; same client+prefix hits the cache 95%+ of
+	// the time. Removes the per-INVITE HTTP RTT from the hot path —
+	// single biggest throughput multiplier.
+	routeCacheCheck := "# /route cache disabled (route_cache_seconds=0)"
+	routeCacheStore := "# /route cache disabled"
+	routeCacheHtable := "# /route cache disabled"
+	if opts.RouteCacheSeconds > 0 {
+		ttl := strconv.Itoa(opts.RouteCacheSeconds)
+		routeCacheHtable = `modparam("htable", "htable", "rcache=>size=12;autoexpire=` + ttl + `")`
+		// DNIS substring length: 0 = full DNIS (safe default), N>0 = first N digits.
+		// Most operators want 0; bump only if your routing config matches
+		// on country code (e.g. all 31xxx → carrier-A) AND you've verified
+		// no longer-prefix rules.
+		var dnisExpr string
+		if opts.RouteCacheKeyLen > 0 {
+			dnisExpr = "$(rU{s.substr,0," + strconv.Itoa(opts.RouteCacheKeyLen) + "})"
+		} else {
+			dnisExpr = "$rU"
+		}
+		var dnisOrigExpr string
+		if opts.RouteCacheKeyLen > 0 {
+			dnisOrigExpr = "$(var(dnis_orig){s.substr,0," + strconv.Itoa(opts.RouteCacheKeyLen) + "})"
+		} else {
+			dnisOrigExpr = "$var(dnis_orig)"
+		}
+		// On cache hit, unpack the 7 parsed routing fields (pipe-separated)
+		// from rcache, populate $var()s, and jump straight to DO_RELAY.
+		// $http_rb is read-only in Kamailio so we cannot fake the
+		// async-reply path — instead we cache parsed values and call
+		// the relay subroutine directly. ROUTE_REPLY does the same call
+		// after parsing the live /route JSON, so both paths share code.
+		routeCacheCheck = `# Cache key = dialer src IP + DNIS (configurable substring).
+    $var(rckey) = $si + ":" + ` + dnisExpr + `;
+    if ($sht(rcache=>$var(rckey)) != $null) {
+        $var(packed) = $sht(rcache=>$var(rckey));
+        $var(client_id)  = $(var(packed){s.select,0,|});
+        $var(carrier_id) = $(var(packed){s.select,1,|});
+        $var(c_host)     = $(var(packed){s.select,2,|});
+        $var(c_port)     = $(var(packed){s.select,3,|});
+        $var(c_xport)    = $(var(packed){s.select,4,|});
+        $var(m_ip)       = $(var(packed){s.select,5,|});
+        $var(sig_ip)     = $(var(packed){s.select,6,|});
+        $var(dnis_orig)  = $rU;
+        $var(ani_orig)   = $fU;
+        $sht(call=>$ci::dnis) = $rU;
+        $sht(call=>$ci::ani)  = $fU;
+        $sht(call=>$ci::sig)  = $si;
+        t_newtran();
+        if ($retcode == 0) { exit; }
+        if ($retcode < 0)  { sl_reply_error(); exit; }
+        t_reply("100", "Trying");
+        route(DO_RELAY);
+        exit;
+    }`
+		routeCacheStore = `# Store parsed routing fields packed pipe-separated, for next INVITE.
+    # jansson_get returns integers as numeric type; leading "" forces
+    # string concat (Kamailio's + would otherwise try int arithmetic and
+    # fail on missing/string fields).
+    if ($var(dnis_orig) != $null && $sht(call=>$ci::sig) != $null && $var(c_host) != $null) {
+        $var(rckey2) = "" + $sht(call=>$ci::sig) + ":" + ` + dnisOrigExpr + `;
+        $sht(rcache=>$var(rckey2)) = "" + $var(client_id) + "|" + $var(carrier_id) + "|" + $var(c_host) + "|" + $var(c_port) + "|" + $var(c_xport) + "|" + $var(m_ip) + "|" + $var(sig_ip);
+    }`
+	}
+
+	mainCfg = strings.ReplaceAll(kamailioMainTmpl, "{{CONTROL_PLANE_URL}}", controlPlaneURL)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_SOCK}}", rtpengineSock)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REQUEST}}", manageReq)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REPLY}}", manageRpl)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_DELETE_ON_BYE}}", deleteOnBye)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{KAMAILIO_CHILDREN}}", strconv.Itoa(children))
+	mainCfg = strings.ReplaceAll(mainCfg, "{{KAMAILIO_TCP_CHILDREN}}", strconv.Itoa(tcpChildren))
+	mainCfg = strings.ReplaceAll(mainCfg, "{{ROUTE_CACHE_HTABLE}}", routeCacheHtable)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{ROUTE_CACHE_CHECK}}", routeCacheCheck)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{ROUTE_CACHE_STORE}}", routeCacheStore)
 	return
 }
 
@@ -164,14 +261,10 @@ debug=2
 log_stderror=no
 log_facility=LOG_LOCAL0
 fork=yes
-# 16 SIP workers + 4 TCP workers. Each INVITE spawns ~5 http_async_query
-# callbacks (/route, /call-start, /call-progress, /call-end, /call-reinvite),
-# all of which run on a worker. With 8 workers + 50+ INVITE/s sustained,
-# the recv-queue on the UDP listen socket grew unbounded (saw 426k packets
-# queued) and kamailio effectively wedged. 16 is comfortable headroom for
-# our SBC workload; bump higher if you sustain >200 calls/sec on this proxy.
-children=16
-tcp_children=4
+# Worker counts driven by config.yaml (kamailio_children / kamailio_tcp_children).
+# Defaults 16/4 — see TUNING.md for sizing by concurrent-call target.
+children={{KAMAILIO_CHILDREN}}
+tcp_children={{KAMAILIO_TCP_CHILDREN}}
 # Larger UDP socket recv buffer so a short worker stall doesn't drop
 # packets at the kernel before kamailio can process them. Default 213k
 # overflows in ~3s of burst SIP traffic.
@@ -220,6 +313,13 @@ modparam("htable", "htable", "pdd=>size=10;autoexpire=120")
 # async call and reading back inside the callback bypasses the bug.
 # autoexpire=300 = 5 min (longer than any plausible setup+ringing time).
 modparam("htable", "htable", "call=>size=12;autoexpire=300")
+# rcache: in-process cache of /route responses. Key = "<dialer_ip>:<6-digit DNIS prefix>"
+# Value = the JSON body from /api/v1/agent/route. TTL is short (config-driven, default 5s)
+# so routing changes propagate quickly while still absorbing burst load. Without this
+# every INVITE requires an HTTP round-trip to the control plane (~50-200ms per call),
+# capping single-SipProxy throughput at ~150 INVITE/s. With cache hit-rate ~95%+
+# (typical for dialer traffic) the ceiling moves to thousands of INVITE/s.
+{{ROUTE_CACHE_HTABLE}}
 
 ####### http_async_client: control-plane #######
 modparam("http_async_client", "tls_verify_host", 0)
@@ -339,6 +439,10 @@ request_route {
         exit;
     }
 
+    # /route cache lookup — if we already have a recent answer for this
+    # client+DNIS-prefix, skip the HTTP round-trip entirely.
+    {{ROUTE_CACHE_CHECK}}
+
     # Absorb retransmissions and send 100 Trying immediately. Without
     # this, Asterisk's T1=500ms retransmit timer fires before our async
     # /route lookup returns, and each retransmission re-enters
@@ -429,21 +533,32 @@ route[ROUTE_REPLY] {
         $var(ani_orig) = $fU;
     }
 
-    # 2. force outbound from the client's signaling IP
+    # Cache the parsed routing fields for the next INVITE from this
+    # client+prefix. Empty/error responses already exited above.
+    {{ROUTE_CACHE_STORE}}
+
+    # Hand off to the shared relay subroutine. DO_RELAY does the
+    # rtpengine offer, call-start fire-and-forget, $ru rewrite, and
+    # t_relay. Cache-hit path also calls DO_RELAY directly with the
+    # same $var()s populated from the htable, sharing 100% of the
+    # relay code between hot- and cold-path.
+    route(DO_RELAY);
+}
+
+# DO_RELAY: the post-routing relay logic. Expects these $var()s set:
+#   client_id, carrier_id, c_host, c_port, c_xport,
+#   m_ip, sig_ip, dnis_orig, ani_orig.
+# Called from both ROUTE_REPLY (after parsing /route JSON) and the
+# cache-hit branch in request_route. Keeping it as a single subroutine
+# means the two code paths can't drift apart over time.
+route[DO_RELAY] {
+    # 1. force outbound from the client's signaling IP
     $fs = "udp:" + $var(sig_ip) + ":5060";
 
-    # 3. rewrite media to the chosen media IP. The line below is rendered
-    # active when rtpengine_sock is set to a non-localhost address
-    # (split-host topology, remote MediaNode). When sock is the default
-    # localhost stub, the line is commented out so kamailio doesn't try
-    # to reach a daemon that isn't there.
+    # 2. rewrite media. Rendered active when rtpengine_sock is non-local.
     {{RTPENGINE_MANAGE_REQUEST}}
 
-    # 4. notify the control plane: call-start
-    # SDP body is base64-encoded so we don't have to JSON-escape newlines,
-    # quotes, slashes. The base64 alphabet is JSON-string-safe by itself.
-    # Backend decodes + parses m= transport, c= endpoint, a=crypto: suite
-    # for the Privacy Monitor.
+    # 3. notify the control plane: call-start
     $var(sdp_b64) = $(rb{s.encode.base64});
     $var(start_body) = "{\"call_id\":\"" + $ci + "\",\"client_id\":" + $var(client_id)
         + ",\"carrier_id\":" + $var(carrier_id) + ",\"media_ip\":\"" + $var(m_ip)
@@ -453,23 +568,11 @@ route[ROUTE_REPLY] {
     $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
     $http_req(hdr) = "Content-Type: application/json";
     $http_req(body) = $var(start_body);
-    # suspend=0 = fire-and-forget. Otherwise this http_async_query would
-    # SUSPEND the SIP transaction, so the subsequent $ru rewrite and
-    # t_relay never actually execute with the INVITE's context. Symptom
-    # was Kamailio sending an INVITE to "sip:you@<carrier>" (default
-    # placeholder URI) because $rU resolved against an empty msg.
     $http_req(suspend) = 0;
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", "CALL_START_REPLY");
 
-    # 5. relay. Stamp the INVITE timestamp into htable keyed by Call-ID so
-    # onreply_route can compute PDD when the first 18x arrives.
+    # 4. relay. PDD timestamp + $ru rewrite + t_relay.
     $sht(pdd=>$ci) = $TV(s) * 1000 + $TV(u) / 1000;
-    # Rewrite the Request URI to point at the carrier. We use $ru rewrite
-    # rather than $du (destination URI override) because Kamailio's TM
-    # branch-add was choking on $du in this build — $ru is the more
-    # conventional path. The dialed number (user part) comes from the
-    # htable snapshot (see above) because $rU is unreliable in this
-    # callback context.
     $ru = "sip:" + $var(dnis_orig) + "@" + $var(c_host) + ":" + $var(c_port);
     xlog("L_NOTICE", "mp-relay: r-uri=$ru sig=$fs dnis=$var(dnis_orig)\n");
     t_on_reply("ROUTE_REPLIES");

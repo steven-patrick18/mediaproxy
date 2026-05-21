@@ -209,7 +209,7 @@ func persistAndServices(cfg *Config, expected []string) {
 		// every reload-or-restart is a full restart — without this guard
 		// the agent would cycle the daemon every heartbeat (~10s) in
 		// steady state and miss every other Asterisk qualify.
-		body := GenRTPEngineConfig(expected, cfg.RTPEngineNGListen)
+		body := GenRTPEngineConfig(expected, cfg.RTPEngineNGListen, cfg.RTPEnginePortMin, cfg.RTPEnginePortMax)
 		changed, err := WriteRTPEngineConfig(cfg.RTPEngineConfPath, body)
 		if err != nil {
 			slog.Error("rtpengine write", "err", err)
@@ -223,7 +223,13 @@ func persistAndServices(cfg *Config, expected []string) {
 			}
 		}
 	case "sip_proxy":
-		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID, cfg.RTPEngineSock)
+		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID, cfg.RTPEngineSock,
+			KamailioGenOpts{
+				Children:          cfg.KamailioChildren,
+				TCPChildren:       cfg.KamailioTCPChildren,
+				RouteCacheSeconds: cfg.RouteCacheSeconds,
+				RouteCacheKeyLen:  cfg.RouteCacheKeyLen,
+			})
 		changed, err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg)
 		if err != nil {
 			slog.Error("kamailio write", "err", err)

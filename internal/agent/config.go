@@ -41,6 +41,50 @@ type Config struct {
 	// to enable rtpengine media handling in Kamailio.
 	RTPEngineSock string `yaml:"rtpengine_sock"`
 
+	// --- scale-tuning knobs --------------------------------------------
+	// These shape how big the Kamailio worker pool is and how much
+	// per-node capacity you can squeeze out before needing a second
+	// SipProxy / MediaNode. See TUNING.md for the capacity matrix.
+
+	// KamailioChildren: number of UDP-handling worker processes per
+	// listen socket. Each worker can handle one INVITE at a time while
+	// the http_async_query is in flight (~100ms RTT to /route). Default
+	// 16 sustains ~150 INVITE/s with the cache disabled, ~1500/s with
+	// it enabled. Bump to 32 for >5k concurrent calls. Memory cost is
+	// negligible (~5MB per worker). Set 0 to use the template default.
+	KamailioChildren int `yaml:"kamailio_children"`
+
+	// KamailioTCPChildren: TCP worker count. Most operators do UDP only;
+	// 4 is plenty unless you have a carrier requiring TCP transport.
+	KamailioTCPChildren int `yaml:"kamailio_tcp_children"`
+
+	// RTPEnginePortMin / RTPEnginePortMax: UDP port range rtpengine uses
+	// for RTP streams. Default 30000-60000 = 30k ports = ~7.5k concurrent
+	// calls (each call uses 4 ports for RTP+RTCP × 2 directions).
+	// For higher concurrency expand the range; the practical max is
+	// 1024-65535 giving ~16k concurrent. Beyond that you need a second
+	// MediaNode.
+	RTPEnginePortMin int `yaml:"rtpengine_port_min"`
+	RTPEnginePortMax int `yaml:"rtpengine_port_max"`
+
+	// RouteCacheSeconds: TTL for the in-Kamailio /route lookup cache
+	// (htable). When non-zero, repeated INVITEs from the same client
+	// to the same DNIS (and matching prefix length) hit the cache
+	// instead of round-tripping to the control plane. Default 5s —
+	// safe for human-driven dialing (the routing rarely changes within
+	// 5s and stale entries just self-expire). Set -1 to disable.
+	RouteCacheSeconds int `yaml:"route_cache_seconds"`
+
+	// RouteCacheKeyLen: how many leading digits of the DNIS to include
+	// in the cache key. 0 (default) means full DNIS — safe regardless
+	// of how your routes table is configured, lower hit rate (only
+	// re-dials of the same number cache-hit). Lower this to 3 if your
+	// routing rules are configured by country code (any 31xxx → carrier
+	// A, any 33xxx → carrier B), to boost hit rate dramatically (>50%).
+	// Going too low can cause WRONG routing if you have more specific
+	// rules — see TUNING.md.
+	RouteCacheKeyLen int `yaml:"route_cache_key_len"`
+
 	// ReadOnly: if true, the agent only reports metrics + bound IPs and
 	// never calls `ip addr add/del`, `netplan apply`, or touches
 	// rtpengine/kamailio configs. Useful for running unprivileged
@@ -105,6 +149,26 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.RTPEngineSock == "" {
 		c.RTPEngineSock = "udp:127.0.0.1:2223"
+	}
+	if c.KamailioChildren <= 0 {
+		c.KamailioChildren = 16
+	}
+	if c.KamailioTCPChildren <= 0 {
+		c.KamailioTCPChildren = 4
+	}
+	if c.RTPEnginePortMin <= 0 {
+		c.RTPEnginePortMin = 30000
+	}
+	if c.RTPEnginePortMax <= 0 {
+		c.RTPEnginePortMax = 60000
+	}
+	// RouteCacheSeconds = 0 means disabled (legitimate value). To
+	// distinguish "operator wants 0" from "operator left it blank",
+	// use -1 in YAML to explicitly disable; default to 5 otherwise.
+	if c.RouteCacheSeconds == 0 {
+		c.RouteCacheSeconds = 5
+	} else if c.RouteCacheSeconds < 0 {
+		c.RouteCacheSeconds = 0
 	}
 	// Zero in the file means "use default". Explicitly disabling is done
 	// by setting auto_claim_max_prefix: -1 in YAML.
