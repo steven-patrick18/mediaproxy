@@ -60,9 +60,11 @@ services:
       HEPLIFYSERVER_LOGSTD: "true"
 
   homer-app:
-    # HOMER 7 web UI. The :server tag is what SIPcapture actually publishes;
-    # there is no :latest on Docker Hub for this image.
-    image: sipcapture/homer-app:server
+    # HOMER 7 web UI (Go binary). `:server` is the legacy Node.js HOMER 5/6
+    # build — UI loaded but the API endpoints all returned "Not found"
+    # because heplify-server writes the homer7 schema. `:go` is the real
+    # HOMER 7.
+    image: sipcapture/homer-app:go
     container_name: homer-app
     restart: unless-stopped
     depends_on:
