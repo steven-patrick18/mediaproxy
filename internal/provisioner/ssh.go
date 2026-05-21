@@ -159,10 +159,13 @@ iface: %s
 read_only: false
 heartbeat_seconds: 10
 # Auto-claim hosts in tight CIDR blocks bound on the NIC. /26 and smaller
-# (RackNerd, OVH, Hetzner colo extra-IP blocks) get enumerated and bound
-# automatically; cloud-VPS shared subnets (/20, /24) are ignored. Set to
-# -1 to disable.
-auto_claim_max_prefix: 26
+# (RackNerd, OVH, Hetzner colo extra-IP blocks) would get enumerated and
+# bound automatically. DISABLED BY DEFAULT (-1) because some providers'
+# upstream switches treat 60+ gratuitous ARPs in a burst as a network
+# attack and shut down the port (observed twice on RackNerd). If you know
+# your provider tolerates this, set to 26 to claim /26 blocks. The Bulk
+# add IPs UI is the safer path — it goes through the throttled reconcile.
+auto_claim_max_prefix: -1
 protect_ips: ["%s"]
 `, r.NodeID, r.Role, r.ControlPlaneURL, r.AgentToken, "eth0", r.Host)
 	// Detect the primary iface — replace eth0 with whatever the box uses.

@@ -176,7 +176,7 @@ func (a *Agent) reconcile(_ context.Context, expected []string) {
 		return
 	}
 
-	for _, ip := range missing {
+	for i, ip := range missing {
 		if protect[ip] {
 			continue
 		}
@@ -185,6 +185,11 @@ func (a *Agent) reconcile(_ context.Context, expected []string) {
 			continue
 		}
 		slog.Info("added ip", "ip", ip)
+		// Throttle between adds — see comment on addIPThrottleMs in nic.go.
+		// Skip sleep on the last one so single-IP adds aren't slowed.
+		if i < len(missing)-1 {
+			time.Sleep(addIPThrottleMs * time.Millisecond)
+		}
 	}
 	for _, ip := range extras {
 		slog.Warn("extra ip on nic (not in expected set)", "ip", ip)

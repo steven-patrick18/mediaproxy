@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // nicAddr is a partial decode of `ip -j addr show`. Prefixlen is included
@@ -103,6 +104,13 @@ func RemoveIP(iface, ip string, cidr int) error {
 	return fmt.Errorf("ip addr del %s: %w (%s)", ip, err, strings.TrimSpace(msg))
 }
 
+// addIPThrottleMs is how long we sleep between individual `ip addr add`
+// calls in batch operations. Sub-second is fine to avoid switch ARP
+// storm/port-security trips at the upstream provider (RackNerd took us
+// offline twice when 60+ IPs were added in a single burst). 100ms × 60 IPs
+// = 6s total — acceptable.
+const addIPThrottleMs = 100
+
 // AutoClaimLocalBlocks looks at the netmask of every IP bound on iface and,
 // for any block tighter than maxPrefix (e.g. maxPrefix=26 covers /26, /27,
 // /28, /29, /30), binds every host in that block that isn't already bound.
@@ -196,6 +204,11 @@ func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
 				}
 				bound[host] = true
 				claimed++
+				// Throttle: gratuitous ARPs from a burst of ip addr add can
+				// trip upstream switch port-security / ARP-storm protection
+				// and drop the host from the network. 100ms × 60 IPs = 6s
+				// total — slow enough that the switch is happy.
+				time.Sleep(addIPThrottleMs * time.Millisecond)
 			}
 		}
 	}
