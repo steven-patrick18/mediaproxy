@@ -97,8 +97,8 @@ sip_warning=no
 include_file "/etc/kamailio/listen.cfg"
 
 ####### modules #######
-loadmodule "sl.so"
 loadmodule "tm.so"
+loadmodule "sl.so"
 loadmodule "rr.so"
 loadmodule "pv.so"
 loadmodule "maxfwd.so"
@@ -113,7 +113,6 @@ loadmodule "htable.so"
 loadmodule "http_async_client.so"
 loadmodule "jansson.so"
 loadmodule "rtpengine.so"
-loadmodule "acc.so"
 loadmodule "siptrace.so"
 
 ####### pike: per-source-IP CPS limiter #######
@@ -134,10 +133,6 @@ modparam("http_async_client", "tls_verify_peer", 0)
 
 ####### rtpengine #######
 modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
-
-####### acc → http: CDRs #######
-modparam("acc", "log_flag", 1)
-modparam("acc", "log_extra", "src_ip=$si;dst_uri=$ru;sip_code=$rs;duration=$DLG_duration")
 
 ####### siptrace → HOMER (HEP3) #######
 # Mirror every SIP message routed through this proxy to heplify-server on
@@ -194,10 +189,11 @@ request_route {
 
     # 1. async route lookup against the control plane. The control plane
     # requires bearer auth; we use the per-node agent token (the same one
-    # call-start / call-end use below). The header is set per-request via
-    # the writeable pseudo-variable $http_req(headers).
+    # call-start / call-end use below). Kamailio 5.8 dropped the legacy
+    # 3-arg http_async_query — body + headers are now set via $http_req()
+    # pseudovars and the call itself is 2-arg.
     $var(qs) = "src_ip=" + $si + "&dnis=" + $rU;
-    $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\n";
+    $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/route?" + $var(qs), "ROUTE_REPLY");
     exit;
 }
@@ -242,13 +238,16 @@ route[ROUTE_REPLY] {
     # quotes, slashes. The base64 alphabet is JSON-string-safe by itself.
     # Backend decodes + parses m= transport, c= endpoint, a=crypto: suite
     # for the Privacy Monitor.
-    $var(sdp_b64) = $(rb{s.encode.b64});
+    $var(sdp_b64) = $(rb{s.encode.base64});
     $var(start_body) = "{\"call_id\":\"" + $ci + "\",\"client_id\":" + $var(client_id)
         + ",\"carrier_id\":" + $var(carrier_id) + ",\"media_ip\":\"" + $var(m_ip)
         + "\",\"signaling_from\":\"" + $var(sig_ip) + "\",\"ani\":\"" + $fU
         + "\",\"dnis\":\"" + $rU + "\",\"sdp_b64\":\"" + $var(sdp_b64) + "\"}";
-    $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
-    http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", $var(start_body), "CALL_START_REPLY");
+    $http_req(method) = "POST";
+    $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+    $http_req(hdr) = "Content-Type: application/json";
+    $http_req(body) = $var(start_body);
+    http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", "CALL_START_REPLY");
 
     # 5. relay. Stamp the INVITE timestamp into htable keyed by Call-ID so
     # onreply_route can compute PDD when the first 18x arrives.
@@ -258,8 +257,8 @@ route[ROUTE_REPLY] {
     t_relay();
 }
 
-route[CALL_START_REPLY] { }
-route[CALL_PROGRESS_REPLY] { }
+route[CALL_START_REPLY] { return; }
+route[CALL_PROGRESS_REPLY] { return; }
 
 onreply_route[ROUTE_REPLIES] {
     if (status =~ "(180|183|200)") {
@@ -273,8 +272,11 @@ onreply_route[ROUTE_REPLIES] {
         $sht(pdd=>$ci) = $null;
         if ($var(pdd_ms) >= 0 && $var(pdd_ms) <= 120000) {
             $var(prog_body) = "{\"call_id\":\"" + $ci + "\",\"pdd_ms\":" + $var(pdd_ms) + "}";
-            $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
-            http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-progress", $var(prog_body), "CALL_PROGRESS_REPLY");
+            $http_req(method) = "POST";
+            $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+            $http_req(hdr) = "Content-Type: application/json";
+            $http_req(body) = $var(prog_body);
+            http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-progress", "CALL_PROGRESS_REPLY");
         }
     }
 }
@@ -283,10 +285,13 @@ onreply_route[ROUTE_REPLIES] {
 event_route[tm:local-request] {
     if (is_method("BYE")) {
         $var(end_body) = "{\"call_id\":\"" + $ci + "\",\"sip_code\":200}";
-        $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
-        http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", $var(end_body), "CALL_END_REPLY");
+        $http_req(method) = "POST";
+        $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+        $http_req(hdr) = "Content-Type: application/json";
+        $http_req(body) = $var(end_body);
+        http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", "CALL_END_REPLY");
     }
 }
 
-route[CALL_END_REPLY] { }
+route[CALL_END_REPLY] { return; }
 `

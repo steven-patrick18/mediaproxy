@@ -119,10 +119,27 @@ func Run(ctx context.Context, r Request) Result {
 	switch r.Role {
 	case "sip_proxy":
 		log("Installing Kamailio (sip_proxy role)")
-		if err := run(client,
-			`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kamailio kamailio-tls-modules kamailio-utils-modules kamailio-extra-modules kamailio-json-modules kamailio-http-async-modules || true && systemctl disable kamailio || true && systemctl stop kamailio || true`,
-			&b); err != nil {
-			log("WARNING: kamailio install: %v", err)
+		// Ubuntu 24.04 ships Kamailio 5.7.4 in `universe`, which is missing the
+		// http_async_client module entirely (it's separate from main kamailio).
+		// We need 5.8 from the kamailio.org repo — same binary structure, but
+		// http_async_client.so is bundled with the main package.
+		// --force-confold lets dpkg keep our agent-written kamailio.cfg instead
+		// of interactively prompting.
+		// We drop `|| true` here too — if kamailio install fails the operator
+		// needs to know, not have it masked.
+		if err := run(client, `
+			set -e
+			curl -fsSL https://deb.kamailio.org/kamailiodebkey.gpg | gpg --dearmor -o /usr/share/keyrings/kamailio-archive-keyring.gpg
+			. /etc/os-release
+			CODENAME="$VERSION_CODENAME"
+			echo "deb [signed-by=/usr/share/keyrings/kamailio-archive-keyring.gpg] http://deb.kamailio.org/kamailio58 $CODENAME main" > /etc/apt/sources.list.d/kamailio.list
+			DEBIAN_FRONTEND=noninteractive apt-get update -qq
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef --allow-downgrades \
+				kamailio kamailio-tls-modules kamailio-utils-modules kamailio-extra-modules kamailio-json-modules
+			systemctl disable kamailio || true
+			systemctl stop kamailio || true
+		`, &b); err != nil {
+			return fail("kamailio install: %v", err)
 		}
 	case "media":
 		log("Installing RTPEngine (media role)")
