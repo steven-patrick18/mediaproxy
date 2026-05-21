@@ -357,6 +357,13 @@ modparam("htable", "htable", "pdd=>size=10;autoexpire=120")
 # async call and reading back inside the callback bypasses the bug.
 # autoexpire=300 = 5 min (longer than any plausible setup+ringing time).
 modparam("htable", "htable", "call=>size=12;autoexpire=300")
+# capacity: short-lived "system at capacity" flag. /route returns 503
+# when all media IPs are at max_calls; we set capacity[src_ip] for 1s
+# so subsequent INVITEs from the same dialer get an immediate 503
+# (mapped to CONGESTION by Asterisk-based dialers) without the HTTP
+# round-trip to /route. Keyed on dialer src IP so different clients
+# don t affect each other.
+modparam("htable", "htable", "capacity=>size=8;autoexpire=1")
 # rcache: in-process cache of /route responses. Key = "<dialer_ip>:<6-digit DNIS prefix>"
 # Value = the JSON body from /api/v1/agent/route. TTL is short (config-driven, default 5s)
 # so routing changes propagate quickly while still absorbing burst load. Without this
@@ -488,6 +495,17 @@ request_route {
         exit;
     }
 
+    # Fast capacity reject. If /route returned 503 ("no media IP
+    # available") for this dialer in the last ~1 second, we re still at
+    # capacity — short-circuit with 503 here instead of paying the HTTP
+    # round-trip just to be told 503 again. Asterisk-based dialers map
+    # 503 to CONGESTION, which is the right semantic for "node full".
+    if (is_method("INVITE") && $sht(capacity=>$si) != $null) {
+        xlog("L_NOTICE", "mp-capacity-rejected: $si\n");
+        sl_send_reply("503","Capacity exhausted");
+        exit;
+    }
+
     # /route cache lookup — if we already have a recent answer for this
     # client+DNIS-prefix, skip the HTTP round-trip entirely.
     {{ROUTE_CACHE_CHECK}}
@@ -556,7 +574,14 @@ route[ROUTE_REPLY] {
             # 486 Busy Here as a real busy and won't immediately retry,
             # which is exactly what we want.
             case 486: sl_send_reply("486","Busy Here"); break;
-            case 503: sl_send_reply("503","Service Unavailable"); break;
+            case 503:
+                # Stamp the capacity flag so the NEXT INVITE from this
+                # dialer in the next ~1s rejects locally without paying
+                # another HTTP round-trip. Auto-expires from htable, so
+                # the system self-recovers as soon as IPs free up.
+                $sht(capacity=>$si) = 1;
+                sl_send_reply("503","Service Unavailable");
+                break;
             default:  sl_send_reply("500","Routing Error");
         }
         exit;
