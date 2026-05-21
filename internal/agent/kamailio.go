@@ -230,14 +230,22 @@ request_route {
 }
 
 route[ROUTE_REPLY] {
+    xlog("L_NOTICE", "mp-route-reply: http_ok=$http_ok rb=$http_rb\n");
     if ($http_ok == 0) {
         xlog("L_ERR", "http_async_query failed: $http_err\n");
         sl_send_reply("503","Routing unavailable");
         exit;
     }
-    jansson_get("error", $http_rb, "$var(err)");
-    if ($var(err) != $null) {
+    # jansson_get sets $var(err) to "<null>" string when the JSON key is
+    # absent; the != $null check below alone would treat that as "error
+    # present". Probe for the actual SUCCESS keys instead — if signaling_ip
+    # came back, the lookup worked.
+    jansson_get("signaling_ip", $http_rb, "$var(sig_ip)");
+    xlog("L_NOTICE", "mp-route-reply: sig_ip=$var(sig_ip)\n");
+    if ($var(sig_ip) == $null || $var(sig_ip) == "<null>" || $var(sig_ip) == "") {
+        jansson_get("error", $http_rb, "$var(err)");
         jansson_get("code", $http_rb, "$var(code)");
+        xlog("L_NOTICE", "mp-route-reply: err=$var(err) code=$var(code)\n");
         switch ($var(code)) {
             case 403: sl_send_reply("403","Forbidden"); break;
             case 404: sl_send_reply("404","Not Found"); break;
@@ -250,7 +258,6 @@ route[ROUTE_REPLY] {
         }
         exit;
     }
-    jansson_get("signaling_ip",      $http_rb, "$var(sig_ip)");
     jansson_get("carrier_host",      $http_rb, "$var(c_host)");
     jansson_get("carrier_port",      $http_rb, "$var(c_port)");
     jansson_get("carrier_transport", $http_rb, "$var(c_xport)");
@@ -261,8 +268,18 @@ route[ROUTE_REPLY] {
     # 2. force outbound from the client's signaling IP
     $fs = "udp:" + $var(sig_ip) + ":5060";
 
-    # 3. rewrite media to the chosen media IP
-    rtpengine_manage("replace-origin replace-session-connection out-iface=" + $var(m_ip));
+    # 3. rewrite media to the chosen media IP. rtpengine_manage() requires
+    # rtpengine running on this SipProxy (default sock 127.0.0.1:2223),
+    # which on our split SipProxy + MediaNode topology isn't the case.
+    # Without a working rtpengine here, this call corrupts transaction
+    # state and t_relay never sends the INVITE. SKIPPED until the agent
+    # is taught to configure rtpengine_sock to point at the remote media
+    # node — separate work. SDP passes through unmodified, which means
+    # RTP will flow direct between dialer and carrier without going
+    # through MediaNode1. Acceptable for signaling-test phase; before
+    # going to production traffic we need rtpengine on this proxy or
+    # remote rtpengine_sock configured.
+    # rtpengine_manage("replace-origin replace-session-connection out-iface=" + $var(m_ip));
 
     # 4. notify the control plane: call-start
     # SDP body is base64-encoded so we don't have to JSON-escape newlines,
@@ -278,12 +295,24 @@ route[ROUTE_REPLY] {
     $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
     $http_req(hdr) = "Content-Type: application/json";
     $http_req(body) = $var(start_body);
+    # suspend=0 = fire-and-forget. Otherwise this http_async_query would
+    # SUSPEND the SIP transaction, so the subsequent $ru rewrite and
+    # t_relay never actually execute with the INVITE's context. Symptom
+    # was Kamailio sending an INVITE to "sip:you@<carrier>" (default
+    # placeholder URI) because $rU resolved against an empty msg.
+    $http_req(suspend) = 0;
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", "CALL_START_REPLY");
 
     # 5. relay. Stamp the INVITE timestamp into htable keyed by Call-ID so
     # onreply_route can compute PDD when the first 18x arrives.
     $sht(pdd=>$ci) = $TV(s) * 1000 + $TV(u) / 1000;
-    $du = $var(c_xport) + ":" + $var(c_host) + ":" + $var(c_port);
+    # Rewrite the Request URI to point at the carrier. We use $ru rewrite
+    # rather than $du (destination URI override) because Kamailio's TM
+    # branch-add was choking on $du in this build — $ru is the more
+    # conventional path. The dialed number (user part) stays from $rU;
+    # only host:port get rewritten.
+    $ru = "sip:" + $rU + "@" + $var(c_host) + ":" + $var(c_port);
+    xlog("L_NOTICE", "mp-relay: r-uri=$ru sig=$fs\n");
     t_on_reply("ROUTE_REPLIES");
     t_relay();
 }
@@ -307,6 +336,7 @@ onreply_route[ROUTE_REPLIES] {
             $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
             $http_req(hdr) = "Content-Type: application/json";
             $http_req(body) = $var(prog_body);
+            $http_req(suspend) = 0;
             http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-progress", "CALL_PROGRESS_REPLY");
         }
     }
@@ -320,6 +350,7 @@ event_route[tm:local-request] {
         $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
         $http_req(hdr) = "Content-Type: application/json";
         $http_req(body) = $var(end_body);
+        $http_req(suspend) = 0;
         http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", "CALL_END_REPLY");
     }
 }
