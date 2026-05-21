@@ -1,0 +1,84 @@
+# HOMER 7 stack for mediaproxy SIP-ladder inspection.
+#
+# Three containers, all on a private docker network. Postgres and homer-app
+# never expose ports to the host network — they're reached either internally
+# or via the nginx reverse proxy at /homer/. Only heplify-server listens on
+# the host (UDP 9060) so Kamailio's siptrace can push HEP3 to it; UFW gates
+# that to the SipProxy IP only.
+#
+# Storage: a named docker volume keeps Postgres data across container restarts.
+# Backup: see deploy/backups/offsite.example.sh — HOMER's PG should be added
+# to the backup set once you have real traffic.
+services:
+  homer-db:
+    image: postgres:15-alpine
+    container_name: homer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: homer
+      POSTGRES_PASSWORD: ${HOMER_DB_PASSWORD}
+      POSTGRES_DB: homer_config
+    volumes:
+      - homer-db-data:/var/lib/postgresql/data
+      # /docker-entrypoint-initdb.d/ is only executed on a fresh data volume.
+      # Idempotent for upgrades — once the volume exists, this is a no-op.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homer -d homer_config"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  heplify-server:
+    image: sipcapture/heplify-server:latest
+    container_name: heplify-server
+    restart: unless-stopped
+    # The published image ships with Cmd=/bin/sh and an empty entrypoint
+    # so the container exits immediately by default. The actual binary
+    # lives at /root/heplify-server. Override here.
+    working_dir: /root
+    command: ["./heplify-server"]
+    depends_on:
+      homer-db:
+        condition: service_healthy
+    ports:
+      # Bind to all interfaces — UFW restricts to the SipProxy IP. UDP only.
+      - "9060:9060/udp"
+    environment:
+      HEPLIFYSERVER_HEPADDR: "0.0.0.0:9060"
+      HEPLIFYSERVER_DBSHEMA: homer7
+      HEPLIFYSERVER_DBDRIVER: postgres
+      HEPLIFYSERVER_DBADDR: "homer-db:5432"
+      HEPLIFYSERVER_DBUSER: homer
+      HEPLIFYSERVER_DBPASS: ${HOMER_DB_PASSWORD}
+      HEPLIFYSERVER_DBDATATABLE: homer_data
+      HEPLIFYSERVER_DBCONFTABLE: homer_config
+      # Auto-create the schema on first start so we don't need a manual
+      # SQL bootstrap step.
+      HEPLIFYSERVER_DBROTATE: "true"
+      HEPLIFYSERVER_LOGLVL: info
+      HEPLIFYSERVER_LOGSTD: "true"
+
+  homer-app:
+    # HOMER 7 web UI. The :server tag is what SIPcapture actually publishes;
+    # there is no :latest on Docker Hub for this image.
+    image: sipcapture/homer-app:server
+    container_name: homer-app
+    restart: unless-stopped
+    depends_on:
+      homer-db:
+        condition: service_healthy
+    ports:
+      # Only localhost — nginx fronts it at /homer/.
+      - "127.0.0.1:9080:80"
+    environment:
+      DB_HOST: homer-db
+      DB_USER: homer
+      DB_PASS: ${HOMER_DB_PASSWORD}
+      DB_DATA_NAME: homer_data
+      DB_CONF_NAME: homer_config
+      HTTP_AUTH_TYPE: internal
+
+volumes:
+  homer-db-data:
+    name: homer-db-data

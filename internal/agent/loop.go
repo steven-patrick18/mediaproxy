@@ -199,7 +199,7 @@ func persistAndServices(cfg *Config, expected []string) {
 		}
 	case "sip_proxy":
 		// Full kamailio.cfg + listen.cfg rewrite + reload-or-restart.
-		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken)
+		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID)
 		if err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg); err != nil {
 			slog.Error("kamailio write", "err", err)
 		} else if err := systemctlAction("kamailio", "reload-or-restart"); err != nil {

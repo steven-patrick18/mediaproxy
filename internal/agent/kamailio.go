@@ -2,8 +2,10 @@ package agent
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -13,11 +15,16 @@ import (
 //   - forces outbound INVITEs from the chosen signaling IP via $fs
 //   - rewrites media via rtpengine_manage()
 //   - relays to the chosen carrier
+//   - mirrors every SIP message as HEP3 to the base-app's heplify-server
+//     (used by HOMER for SIP-ladder inspection)
+//
 // SIP-layer hardening (pike per-source CPS, htable blocklist, drop scanner UAs)
 // is built in.
 //
 // listenIPs is the set of signaling IPs bound on this node (already deduped).
-func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string) (listenCfg string, mainCfg string) {
+// nodeID is used as the HEP capture-id so HOMER can attribute messages to
+// the right proxy when multiple SipProxy nodes are in play.
+func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64) (listenCfg string, mainCfg string) {
 	uniq := make([]string, 0, len(listenIPs))
 	seen := map[string]struct{}{}
 	for _, ip := range listenIPs {
@@ -37,8 +44,20 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string) (
 	}
 	listenCfg = lb.String()
 
+	// HEP destination = the host part of the control-plane URL. heplify-server
+	// listens on UDP/9060 on the base-app; kamailio resolves the hostname at
+	// load time. If parsing fails we leave it blank and the template will
+	// render "sip:" — siptrace just won't push anything, which is the right
+	// degraded mode (don't break call routing because HEP capture is unhappy).
+	hepHost := ""
+	if u, err := url.Parse(controlPlaneURL); err == nil {
+		hepHost = u.Hostname()
+	}
+
 	mainCfg = strings.ReplaceAll(kamailioMainTmpl, "{{CONTROL_PLANE_URL}}", controlPlaneURL)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
 	return
 }
 
@@ -95,6 +114,7 @@ loadmodule "http_async_client.so"
 loadmodule "jansson.so"
 loadmodule "rtpengine.so"
 loadmodule "acc.so"
+loadmodule "siptrace.so"
 
 ####### pike: per-source-IP CPS limiter #######
 modparam("pike", "sampling_time_unit", 2)
@@ -118,6 +138,20 @@ modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
 ####### acc → http: CDRs #######
 modparam("acc", "log_flag", 1)
 modparam("acc", "log_extra", "src_ip=$si;dst_uri=$ru;sip_code=$rs;duration=$DLG_duration")
+
+####### siptrace → HOMER (HEP3) #######
+# Mirror every SIP message routed through this proxy to heplify-server on
+# the base-app. UDP/9060. capture_id distinguishes this node's traffic in
+# HOMER when multiple SipProxy nodes are deployed.
+modparam("siptrace", "duplicate_uri", "sip:{{HOMER_HEP_HOST}}:9060")
+modparam("siptrace", "hep_mode_on", 1)
+modparam("siptrace", "hep_version", 3)
+modparam("siptrace", "hep_capture_id", {{HOMER_CAPTURE_ID}})
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+# trace_mode=1 means "trace every message" — no need to call sip_trace()
+# in script. Safer than per-route tracing for SIP-ladder completeness.
+modparam("siptrace", "trace_mode", 1)
 
 ####### request route #######
 request_route {

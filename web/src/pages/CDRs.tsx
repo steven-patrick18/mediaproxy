@@ -153,11 +153,12 @@ export default function CDRs() {
               <th className="px-3 py-2">Node</th>
               <th className="px-3 py-2">Disposition</th>
               <th className="px-3 py-2">SIP</th>
+              <th className="px-3 py-2 text-right">Trace</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 && !busy && (
-              <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-400">No CDRs match.</td></tr>
+              <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">No CDRs match.</td></tr>
             )}
             {rows.map((r) => (
               <tr key={r.id} className="hover:bg-slate-50">
@@ -170,6 +171,17 @@ export default function CDRs() {
                 <td className="px-3 py-1.5">{r.node_id ?? "—"}</td>
                 <td className="px-3 py-1.5">{dispoBadge(r.disposition)}</td>
                 <td className="px-3 py-1.5 font-mono text-xs">{r.sip_code ?? "—"}</td>
+                <td className="px-3 py-1.5 text-right">
+                  <a
+                    href={`/homer/#/search/result/${encodeURIComponent(r.call_id)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open SIP ladder for this call in HOMER"
+                    className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
+                  >
+                    SIP
+                  </a>
+                </td>
               </tr>
             ))}
           </tbody>
