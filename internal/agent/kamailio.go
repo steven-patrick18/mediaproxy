@@ -164,7 +164,18 @@ debug=2
 log_stderror=no
 log_facility=LOG_LOCAL0
 fork=yes
-children=8
+# 16 SIP workers + 4 TCP workers. Each INVITE spawns ~5 http_async_query
+# callbacks (/route, /call-start, /call-progress, /call-end, /call-reinvite),
+# all of which run on a worker. With 8 workers + 50+ INVITE/s sustained,
+# the recv-queue on the UDP listen socket grew unbounded (saw 426k packets
+# queued) and kamailio effectively wedged. 16 is comfortable headroom for
+# our SBC workload; bump higher if you sustain >200 calls/sec on this proxy.
+children=16
+tcp_children=4
+# Larger UDP socket recv buffer so a short worker stall doesn't drop
+# packets at the kernel before kamailio can process them. Default 213k
+# overflows in ~3s of burst SIP traffic.
+udp_mtu=1500
 auto_aliases=no
 mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
 sip_warning=no
