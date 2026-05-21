@@ -4,6 +4,18 @@ VoIP SBC / media-relay platform. See [ARCHITECTURE.md](./ARCHITECTURE.md) for th
 
 Phase 1 (current): base app (control plane) — Go API + PostgreSQL + Redis, single VPS.
 
+## Fresh install
+
+On a clean Ubuntu 24.04 VPS:
+
+```bash
+git clone git@github.com:steven-patrick18/mediaproxy.git /opt/mediaproxy
+cd /opt/mediaproxy
+sudo ./scripts/install.sh --domain mediaproxy.example.com --admin-email you@example.com
+```
+
+Full install + DR runbook in [INSTALL.md](./INSTALL.md). Adding sip_proxy / media nodes is one-click from the panel — **Infrastructure → Nodes → Add node → Provision via SSH**.
+
 ## Local dev (on VPS)
 
 ```bash
