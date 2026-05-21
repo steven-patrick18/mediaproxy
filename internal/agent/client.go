@@ -117,3 +117,16 @@ type CommandResult struct {
 func (c *Client) AckCommand(ctx context.Context, r CommandResult) error {
 	return c.post(ctx, "/api/v1/agent/command-result", r, nil)
 }
+
+// CallQualityBatch is the body of /api/v1/agent/call-quality. The endpoint
+// is best-effort: errors here never block other agent work.
+type CallQualityBatch struct {
+	Entries []CallQuality `json:"entries"`
+}
+
+func (c *Client) PostCallQuality(ctx context.Context, entries []CallQuality) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return c.post(ctx, "/api/v1/agent/call-quality", CallQualityBatch{Entries: entries}, nil)
+}

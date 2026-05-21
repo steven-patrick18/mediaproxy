@@ -31,6 +31,10 @@ type CarrierQuality struct {
 	PDDSamples   int64            `json:"pdd_samples"`
 	TopCodec     string           `json:"top_codec,omitempty"`
 	TopCodecPct  float64          `json:"top_codec_pct,omitempty"`
+	AvgMOS       *float64         `json:"avg_mos,omitempty"`
+	AvgJitterMs  *float64         `json:"avg_jitter_ms,omitempty"`
+	AvgLossPct   *float64         `json:"avg_loss_pct,omitempty"`
+	RTPSamples   int64            `json:"rtp_samples"`
 	Grade        string           `json:"grade"` // A / B / C / D / F
 	GradeReasons []string         `json:"grade_reasons"`
 }
@@ -60,7 +64,11 @@ func (s *Server) routeQuality(c *gin.Context) {
 		    avg(cr.pdd_ms)::float8 FILTER (WHERE cr.pdd_ms IS NOT NULL) AS avg_pdd,
 		    percentile_cont(0.95) WITHIN GROUP (ORDER BY cr.pdd_ms)
 		      FILTER (WHERE cr.pdd_ms IS NOT NULL) AS p95_pdd,
-		    count(*) FILTER (WHERE cr.pdd_ms IS NOT NULL) AS pdd_samples
+		    count(*) FILTER (WHERE cr.pdd_ms IS NOT NULL) AS pdd_samples,
+		    avg(cr.mos_score) FILTER (WHERE cr.mos_score IS NOT NULL) AS avg_mos,
+		    avg(cr.avg_jitter_ms) FILTER (WHERE cr.avg_jitter_ms IS NOT NULL) AS avg_jitter,
+		    avg(cr.avg_packet_loss_pct) FILTER (WHERE cr.avg_packet_loss_pct IS NOT NULL) AS avg_loss,
+		    count(*) FILTER (WHERE cr.mos_score IS NOT NULL) AS rtp_samples
 		  FROM carriers car
 		  LEFT JOIN call_records cr
 		    ON cr.carrier_id = car.id
@@ -80,16 +88,20 @@ func (s *Server) routeQuality(c *gin.Context) {
 		var q CarrierQuality
 		var c200, c486, c487, c480, c503, cother int64
 		var acd float64
-		var avgPDD, p95PDD *float64
+		var avgPDD, p95PDD, avgMOS, avgJitter, avgLoss *float64
 		if err := rows.Scan(&q.CarrierID, &q.CarrierName, &q.Total, &q.Answered, &acd,
 			&c200, &c486, &c487, &c480, &c503, &cother,
-			&avgPDD, &p95PDD, &q.PDDSamples); err != nil {
+			&avgPDD, &p95PDD, &q.PDDSamples,
+			&avgMOS, &avgJitter, &avgLoss, &q.RTPSamples); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		q.ACDSeconds = acd
 		q.AvgPDDMs = avgPDD
 		q.P95PDDMs = p95PDD
+		q.AvgMOS = avgMOS
+		q.AvgJitterMs = avgJitter
+		q.AvgLossPct = avgLoss
 		if q.Total > 0 {
 			q.ASRPct = float64(q.Answered) / float64(q.Total) * 100
 		}
@@ -217,6 +229,24 @@ func gradeCarrier(q CarrierQuality) (string, []string) {
 	if q.TopCodecPct >= 80 && strings.HasPrefix(strings.ToUpper(q.TopCodec), "G729") {
 		score -= 15
 		reasons = append(reasons, "codec lock: G.729 forced on "+formatPct(q.TopCodecPct)+" of calls")
+	}
+
+	// RTP quality (Phase 3). Only score when we have at least 5 RTP-sampled
+	// calls — fewer means we can't trust the average.
+	if q.AvgMOS != nil && q.RTPSamples >= 5 {
+		mos := *q.AvgMOS
+		switch {
+		case mos < 3.0:
+			score -= 30
+			reasons = append(reasons, "MOS very low (<3.0) — audio quality unacceptable")
+		case mos < 3.5:
+			score -= 15
+			reasons = append(reasons, "MOS low (<3.5) — noticeable audio degradation")
+		}
+	}
+	if q.AvgLossPct != nil && q.RTPSamples >= 5 && *q.AvgLossPct > 2.0 {
+		score -= 15
+		reasons = append(reasons, "packet loss elevated (>2% avg)")
 	}
 
 	if score < 0 {

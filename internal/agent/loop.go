@@ -114,6 +114,17 @@ func (a *Agent) tick(ctx context.Context) error {
 	for _, cmd := range hb.Commands {
 		a.runCommand(ctx, cmd)
 	}
+
+	// Phase 3 of route quality: per-call RTP stats. Media-role only, since
+	// only media nodes run rtpengine. Best-effort — failure here never
+	// touches the heartbeat path.
+	if a.Cfg.Role == "media" {
+		if entries := SampleRTPEngineQuality(); len(entries) > 0 {
+			if err := a.API.PostCallQuality(ctx, entries); err != nil {
+				slog.Debug("post call-quality failed", "err", err, "samples", len(entries))
+			}
+		}
+	}
 	return nil
 }
 

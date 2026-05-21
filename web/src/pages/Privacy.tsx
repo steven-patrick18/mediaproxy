@@ -339,6 +339,7 @@ export default function Privacy() {
                 <th className="px-3 py-2 text-right">ACD</th>
                 <th className="px-3 py-2 text-right">PDD avg / p95</th>
                 <th className="px-3 py-2">Top codec</th>
+                <th className="px-3 py-2 text-right">MOS / loss</th>
                 <th className="px-3 py-2">Cause-code mix</th>
                 <th className="px-3 py-2">Reasons</th>
               </tr>
@@ -346,7 +347,7 @@ export default function Privacy() {
             <tbody className="divide-y divide-slate-100">
               {quality.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={10} className="px-3 py-6 text-center text-slate-400">
                     No carriers defined yet.
                   </td>
                 </tr>
@@ -405,6 +406,25 @@ export default function Privacy() {
                         ? `${q.top_codec} (${(q.top_codec_pct ?? 0).toFixed(0)}%)`
                         : "—"}
                     </td>
+                    <td className="px-3 py-2 text-right font-mono text-xs">
+                      {q.avg_mos != null && q.rtp_samples >= 5 ? (
+                        <span
+                          className={
+                            q.avg_mos < 3.0
+                              ? "text-rose-700 font-medium"
+                              : q.avg_mos < 3.5
+                                ? "text-amber-700"
+                                : q.avg_mos >= 4.0
+                                  ? "text-emerald-700"
+                                  : "text-slate-600"
+                          }
+                        >
+                          {q.avg_mos.toFixed(2)} / {(q.avg_loss_pct ?? 0).toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-xs">
                       {q.total === 0 ? (
                         <span className="text-slate-400">—</span>
@@ -427,9 +447,10 @@ export default function Privacy() {
           </table>
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
-          Phases 1–2 shipped: CDR metrics + PDD timing + codec-lock detection. Remaining:
-          Phase 3 — RTP MOS / jitter / loss from RTPEngine NG socket;
-          Phase 4 — HOMER integration for full SIP-ladder drill-down per call.
+          All 4 phases of route-quality monitoring shipped:
+          Phase 1 CDR metrics, Phase 2 PDD &amp; codec-lock detection, Phase 3 RTP MOS / jitter
+          / loss from RTPEngine NG socket, Phase 4 HOMER SIP-ladder drill-down (per-CDR "SIP"
+          button on the CDRs page).
         </p>
       </section>
 

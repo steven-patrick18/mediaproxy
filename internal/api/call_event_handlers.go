@@ -157,6 +157,53 @@ type callProgressReq struct {
 	PDDMs  int    `json:"pdd_ms" binding:"required,gte=0,lte=120000"`
 }
 
+// POST /api/v1/agent/call-quality
+//
+// Media-role agents push this every heartbeat with a batch of RTP-stats
+// snapshots queried from RTPEngine's NG socket. We always take the LATEST
+// snapshot per call_id (overwrite-on-update) — the snapshot at call-end
+// is what gets propagated to call_records.
+type callQualityReq struct {
+	Entries []callQualityEntry `json:"entries" binding:"required,dive"`
+}
+type callQualityEntry struct {
+	CallID        string  `json:"call_id" binding:"required"`
+	JitterMs      float64 `json:"jitter_ms" binding:"gte=0,lte=10000"`
+	PacketLossPct float64 `json:"packet_loss_pct" binding:"gte=0,lte=100"`
+	MOSScore      float64 `json:"mos_score" binding:"gte=0,lte=5"`
+}
+
+func (s *Server) callQuality(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
+	var req callQualityReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Update each entry individually; a single bad row shouldn't reject the
+	// rest. We could batch with VALUES + JOIN, but per-call this stays
+	// readable and an agent typically reports <50 active calls per tick.
+	updated := 0
+	for _, e := range req.Entries {
+		tag, err := s.deps.PG.Exec(c.Request.Context(), `
+			UPDATE active_calls
+			   SET avg_jitter_ms       = $3,
+			       avg_packet_loss_pct = $4,
+			       mos_score           = NULLIF($5, 0)
+			 WHERE call_id = $1 AND node_id = $2
+		`, e.CallID, nodeID, e.JitterMs, e.PacketLossPct, e.MOSScore)
+		if err != nil {
+			slog.Error("call-quality: update failed",
+				"err", err, "call_id", e.CallID, "node_id", nodeID)
+			continue
+		}
+		if tag.RowsAffected() > 0 {
+			updated++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"received": len(req.Entries), "updated": updated})
+}
+
 func (s *Server) callProgress(c *gin.Context) {
 	nodeID := c.GetInt64("agent_node_id")
 	var req callProgressReq
@@ -266,7 +313,8 @@ func (s *Server) callEnd(c *gin.Context) {
 		DELETE FROM active_calls WHERE call_id = $1 AND node_id = $2
 		 RETURNING client_id, carrier_id, media_ip, signaling_from, ani, dnis, started_at,
 		           media_transport, host(media_endpoint_ip), crypto_suite,
-		           pdd_ms, codecs_offered
+		           pdd_ms, codecs_offered,
+		           avg_jitter_ms, avg_packet_loss_pct, mos_score
 	`, req.CallID, nodeID)
 	var (
 		clientID, carrierID                   *int64
@@ -276,9 +324,11 @@ func (s *Server) callEnd(c *gin.Context) {
 		mediaTransport, mediaEndpoint, crypto *string
 		pddMs                                 *int
 		codecsOffered                         *string
+		avgJitterMs, avgLossPct, mosScore     *float64
 	)
 	if err := row.Scan(&clientID, &carrierID, &mediaIP, &sigFrom, &ani, &dnis, &startedAt,
-		&mediaTransport, &mediaEndpoint, &crypto, &pddMs, &codecsOffered); err != nil {
+		&mediaTransport, &mediaEndpoint, &crypto, &pddMs, &codecsOffered,
+		&avgJitterMs, &avgLossPct, &mosScore); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "active call not found"})
 		return
 	}
@@ -297,14 +347,17 @@ func (s *Server) callEnd(c *gin.Context) {
 		    (call_id, client_id, carrier_id, node_id, media_ip, signaling_from,
 		     ani, dnis, started_at, ended_at, duration_sec, disposition, sip_code,
 		     media_transport, media_endpoint_ip, crypto_suite,
-		     pdd_ms, codecs_offered)
+		     pdd_ms, codecs_offered,
+		     avg_jitter_ms, avg_packet_loss_pct, mos_score)
 		VALUES ($1, $2, $3, $4, $5::inet, $6::inet, $7, $8, $9, now(), $10, $11, $12,
 		        $13, NULLIF($14,'')::inet, $15,
-		        $16, $17)
+		        $16, $17,
+		        $18, $19, $20)
 	`, req.CallID, clientID, carrierID, nodeID, mediaIP, sigFrom, ani, dnis,
 		startedAt, dur, dispo, sipCode,
 		mediaTransport, derefStr(mediaEndpoint), crypto,
-		pddMs, codecsOffered)
+		pddMs, codecsOffered,
+		avgJitterMs, avgLossPct, mosScore)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

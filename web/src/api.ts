@@ -123,6 +123,10 @@ export interface CarrierQuality {
   pdd_samples: number;
   top_codec?: string;
   top_codec_pct?: number;
+  avg_mos?: number | null;
+  avg_jitter_ms?: number | null;
+  avg_loss_pct?: number | null;
+  rtp_samples: number;
   grade: string;
   grade_reasons: string[];
 }
