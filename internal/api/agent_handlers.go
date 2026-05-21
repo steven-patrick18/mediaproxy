@@ -213,6 +213,17 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		slog.Error("heartbeat: touch node_ips.last_health_check failed", "node_id", nodeID, "err", err)
 	}
 
+	// Auto-create the default IP group for this node on first IP-discovery
+	// so the operator never has to "wire IPs into a pool" by hand for the
+	// common case. Skips silently if the group already exists or there's
+	// nothing to add. Cheap (one COALESCE INSERT + one conditional INSERT).
+	// Only meaningful on media-role nodes.
+	if role == "media" && len(req.BoundIPs) > 0 {
+		if err := s.ensureDefaultGroupForNode(c.Request.Context(), nodeID); err != nil {
+			slog.Warn("heartbeat: ensure default IP group failed", "node_id", nodeID, "err", err)
+		}
+	}
+
 	expected, err := s.expectedIPs(c.Request.Context(), nodeID, role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

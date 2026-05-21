@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -169,7 +171,71 @@ func (s *Server) bulkCreateNodeIPs(c *gin.Context) {
 			skipped++
 		}
 	}
+	// Auto-create a default IP group for this node if one doesn't already
+	// exist, and add every active IP that isn't yet in any active group.
+	// Saves the operator a 4-click workflow after a bulk add: "create
+	// group → name it → pick members → save".
+	if created > 0 {
+		if err := s.ensureDefaultGroupForNode(c.Request.Context(), req.NodeID); err != nil {
+			// Soft-fail: the IPs are in, the operator can just create a
+			// group manually if this didn't fire. Don't reject the bulk
+			// import for this.
+			c.JSON(http.StatusOK, gin.H{
+				"created": created, "skipped": skipped, "total": len(addrs),
+				"group_warning": err.Error(),
+			})
+			return
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"created": created, "skipped": skipped, "total": len(addrs)})
+}
+
+// ensureDefaultGroupForNode is idempotent: if a group named "<node> default"
+// already exists, reuse it; otherwise create one. Then mark every active
+// node_ip for this node that isn't yet a member of any active group as a
+// member of the default group.
+//
+// Naming convention: "<NodeName> default" — visible in the UI and easy to
+// rename. Operators are free to create additional groups for finer slicing
+// (region, transcoding tier, etc) and reassign IPs between them; this
+// function only fills the empty case.
+func (s *Server) ensureDefaultGroupForNode(ctx context.Context, nodeID int64) error {
+	var nodeName string
+	if err := s.deps.PG.QueryRow(ctx,
+		`SELECT name FROM media_nodes WHERE id = $1`, nodeID,
+	).Scan(&nodeName); err != nil {
+		return fmt.Errorf("lookup node: %w", err)
+	}
+	groupName := nodeName + " default"
+
+	var groupID int64
+	err := s.deps.PG.QueryRow(ctx, `
+		INSERT INTO ip_groups (name, status, notes)
+		VALUES ($1, 'active', 'Auto-created default pool for ' || $1)
+		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`, groupName).Scan(&groupID)
+	if err != nil {
+		return fmt.Errorf("ensure group: %w", err)
+	}
+
+	// Add every active IP on this node that isn't yet an active member of
+	// any group. WHERE NOT EXISTS lets us run this idempotently without
+	// duplicating memberships.
+	if _, err := s.deps.PG.Exec(ctx, `
+		INSERT INTO ip_group_members (group_id, ip_id, active)
+		SELECT $1, ni.id, true
+		  FROM node_ips ni
+		 WHERE ni.node_id = $2
+		   AND ni.status = 'active'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM ip_group_members m
+		        WHERE m.ip_id = ni.id AND m.active = true
+		   )
+	`, groupID, nodeID); err != nil {
+		return fmt.Errorf("seed group members: %w", err)
+	}
+	return nil
 }
 
 type patchNodeIPRequest struct {
