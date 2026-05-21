@@ -127,15 +127,25 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 		// (one rtpengine_sock modparam per set), the per-call set is
 		// chosen via the `set=N` flag inside the offer/answer/delete
 		// command — set_rtpengine_set() itself only accepts constant
-		// integers, which doesn t work with a runtime $var. The flag
-		// approach is the documented way for dynamic per-call selection.
-		setFlag := ""
-		if len(opts.RTPEngineSets) > 0 {
-			setFlag = `"set=" + $var(m_node_id) + " " + `
-		}
-		manageReq = `rtpengine_offer(` + setFlag + `"replace-origin replace-session-connection direction=any direction=" + $var(m_ip));`
+		// integers, which doesn t work with a runtime $var.
+		//
+		// When m_node_id is empty (stale cache entry without the
+		// media_node_id field, or an /route reply that didn t include
+		// it) we DON T pass set= — rtpengine falls back to the default
+		// modparam socket. The alternative was passing "set=" which
+		// kamailio interprets as set id 0 → "invalid id_set" → script
+		// error → no media → 3000+ ERRORs/min in prod.
+		manageReq = `if ($var(m_node_id) != $null && $var(m_node_id) != "") {
+        rtpengine_offer("set=" + $var(m_node_id) + " replace-origin replace-session-connection direction=any direction=" + $var(m_ip));
+    } else {
+        rtpengine_offer("replace-origin replace-session-connection direction=any direction=" + $var(m_ip));
+    }`
 		manageRpl = `if (status =~ "(180|183|200)") {
-        rtpengine_answer(` + setFlag + `"");
+        if ($var(m_node_id) != $null && $var(m_node_id) != "") {
+            rtpengine_answer("set=" + $var(m_node_id));
+        } else {
+            rtpengine_answer();
+        }
     }`
 	}
 
@@ -228,15 +238,19 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
-	// rtpengine_sock map. If the operator wired a single sock via YAML
-	// (RTPEngineSock), we still render it as the default set (id 0) so
-	// existing single-node setups behave identically. If the heartbeat
-	// delivered a multi-set list, render one modparam per active media
-	// node — adding/removing a MediaNode auto-propagates here within
-	// one heartbeat tick (no operator action needed).
+	// rtpengine_sock map. ALWAYS render a default (no-set-id) socket
+	// pointing at the first active media node — that way if the per-call
+	// `set=` flag is missing or refers to a set id that isn t configured
+	// here, kamailio falls back to the default and the call still works
+	// instead of erroring "no available proxies". Then render one
+	// numbered set per active media node for explicit per-call selection.
 	rtpengineSockBlock := `modparam("rtpengine", "rtpengine_sock", "` + rtpengineSock + `")`
 	if len(opts.RTPEngineSets) > 0 {
 		var lines []string
+		// Default fallback first — points at the first media node so a
+		// missing set= flag still routes media instead of erroring.
+		lines = append(lines, `modparam("rtpengine", "rtpengine_sock", "`+opts.RTPEngineSets[0].Sock+`")`)
+		// Then each set explicitly, so per-call set=N selects a specific node.
 		for _, s := range opts.RTPEngineSets {
 			lines = append(lines, `modparam("rtpengine", "rtpengine_sock", "`+
 				strconv.FormatInt(s.SetID, 10)+` == `+s.Sock+`")`)
