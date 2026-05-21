@@ -29,6 +29,18 @@ type Config struct {
 	// (development, smoke tests on a host that already has its own
 	// networking). Defaults to false in production.
 	ReadOnly bool `yaml:"read_only"`
+
+	// AutoClaimMaxPrefix: enable "tight CIDR auto-discovery". When set to N,
+	// the agent inspects each bound IP's netmask; if the prefix length is
+	// >= N (i.e. the block is N bits or tighter), it enumerates every host
+	// in that block and binds them on the interface. Default 26 covers
+	// /26, /27, /28, /29, /30 — the typical dedicated-server "extra IP
+	// block" sizes (RackNerd, OVH, Hetzner colo, etc.) — without
+	// false-positive on cloud-VPS shared subnets (Vultr/DO/AWS use /20 or
+	// /24 which won't trigger). Set to 0 to disable entirely (operator
+	// uses Bulk add in the panel instead). Set to 24 to be aggressive
+	// (claims any /24 it sees, dangerous on shared cloud subnets).
+	AutoClaimMaxPrefix int `yaml:"auto_claim_max_prefix"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -69,6 +81,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.HTTPTimeout == 0 {
 		c.HTTPTimeout = 10 * time.Second
+	}
+	// Zero in the file means "use default". Explicitly disabling is done
+	// by setting auto_claim_max_prefix: -1 in YAML.
+	if c.AutoClaimMaxPrefix == 0 {
+		c.AutoClaimMaxPrefix = 26
+	} else if c.AutoClaimMaxPrefix < 0 {
+		c.AutoClaimMaxPrefix = 0
 	}
 	return &c, nil
 }

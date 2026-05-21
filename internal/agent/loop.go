@@ -64,6 +64,20 @@ func (a *Agent) boot(ctx context.Context) error {
 }
 
 func (a *Agent) tick(ctx context.Context) error {
+	// Before we scan, opportunistically bind every host in tight CIDR blocks
+	// the kernel knows about. This is what makes a dedicated-server with an
+	// "extra IP block" (e.g. RackNerd /26) self-populate without any panel
+	// step. Disabled if AutoClaimMaxPrefix is 0; safe at default 26 because
+	// cloud-VPS shared subnets are /20-/24 which don't trigger.
+	if !a.Cfg.ReadOnly && a.Cfg.AutoClaimMaxPrefix > 0 {
+		if n, err := AutoClaimLocalBlocks(a.Cfg.Iface, a.Cfg.AutoClaimMaxPrefix); err != nil {
+			slog.Warn("auto-claim local CIDR blocks failed", "err", err)
+		} else if n > 0 {
+			slog.Info("auto-claimed host IPs from tight CIDR block",
+				"iface", a.Cfg.Iface, "claimed", n, "max_prefix", a.Cfg.AutoClaimMaxPrefix)
+		}
+	}
+
 	bound, err := ScanIPs(a.Cfg.Iface)
 	if err != nil {
 		// On a host without the configured iface, just report empty.

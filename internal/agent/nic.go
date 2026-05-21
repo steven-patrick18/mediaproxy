@@ -4,16 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 )
 
-// nicAddr is a partial decode of `ip -j addr show`.
+// nicAddr is a partial decode of `ip -j addr show`. Prefixlen is included
+// so callers can also reason about the subnet mask of each bound address.
 type nicLink struct {
 	IfName   string `json:"ifname"`
 	AddrInfo []struct {
-		Family string `json:"family"`
-		Local  string `json:"local"`
+		Family    string `json:"family"`
+		Local     string `json:"local"`
+		PrefixLen int    `json:"prefixlen"`
 	} `json:"addr_info"`
 }
 
@@ -97,6 +100,142 @@ func RemoveIP(iface, ip string, cidr int) error {
 		return nil
 	}
 	return fmt.Errorf("ip addr del %s: %w (%s)", ip, err, strings.TrimSpace(msg))
+}
+
+// AutoClaimLocalBlocks looks at the netmask of every IP bound on iface and,
+// for any block tighter than maxPrefix (e.g. maxPrefix=26 covers /26, /27,
+// /28, /29, /30), binds every host in that block that isn't already bound.
+//
+// Why: dedicated-server providers (RackNerd, OVH, Hetzner colo) hand out
+// "extra IP" allocations as a /26 or /27, configure ONLY the primary IP via
+// cloud-init, and expect the operator to add the rest. This function makes
+// the agent do that automatically — without ever guessing on cloud-VPS
+// shared subnets (which are /20 or /24 and won't trigger when maxPrefix is
+// 26 or tighter).
+//
+// Safety:
+//   - maxPrefix outside [24, 32] is a no-op (refuses to enumerate huge
+//     blocks even if the operator misconfigures).
+//   - Loopback and link-local interfaces are skipped.
+//   - Network + broadcast addresses are skipped.
+//   - Errors from individual AddIP calls are logged via the returned
+//     error count but never abort the whole pass.
+//
+// Returns (newlyClaimed, error).
+func AutoClaimLocalBlocks(iface string, maxPrefix int) (int, error) {
+	if maxPrefix < 24 || maxPrefix > 32 {
+		return 0, nil
+	}
+	out, err := exec.Command("ip", "-j", "addr", "show").Output()
+	if err != nil {
+		return 0, fmt.Errorf("ip addr show: %w", err)
+	}
+	var links []nicLink
+	if err := json.Unmarshal(out, &links); err != nil {
+		return 0, fmt.Errorf("parse ip json: %w", err)
+	}
+
+	bound := map[string]bool{}
+	for _, l := range links {
+		for _, a := range l.AddrInfo {
+			if a.Family == "inet" && a.Local != "" {
+				bound[a.Local] = true
+			}
+		}
+	}
+
+	// Track which CIDRs we've already enumerated so we don't redo the same
+	// block when two addresses sit inside it.
+	seenBlocks := map[string]bool{}
+	claimed := 0
+	for _, l := range links {
+		if l.IfName != iface {
+			continue
+		}
+		for _, a := range l.AddrInfo {
+			if a.Family != "inet" || a.Local == "" {
+				continue
+			}
+			if a.PrefixLen < maxPrefix || a.PrefixLen > 32 {
+				continue
+			}
+			if strings.HasPrefix(a.Local, "127.") || strings.HasPrefix(a.Local, "169.254.") {
+				continue
+			}
+			cidr := fmt.Sprintf("%s/%d", a.Local, a.PrefixLen)
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				continue
+			}
+			key := network.String()
+			if seenBlocks[key] {
+				continue
+			}
+			seenBlocks[key] = true
+			for _, host := range hostsInCIDR(network) {
+				if bound[host] {
+					continue
+				}
+				if err := AddIP(iface, host, a.PrefixLen); err != nil {
+					// Don't abort the pass on a single failure (might be a
+					// gateway IP the host can't claim, etc.). Caller logs.
+					continue
+				}
+				bound[host] = true
+				claimed++
+			}
+		}
+	}
+	return claimed, nil
+}
+
+// hostsInCIDR returns every usable host in network, skipping the network
+// address and the broadcast address. For /31 and /32 it returns both/the
+// single address (RFC 3021 + point-to-host conventions).
+func hostsInCIDR(network *net.IPNet) []string {
+	ones, bits := network.Mask.Size()
+	if bits != 32 {
+		return nil
+	}
+	if ones >= 31 {
+		// /31 and /32: return every address; no network/broadcast in this convention.
+		out := []string{}
+		ip := network.IP.Mask(network.Mask).To4()
+		if ip == nil {
+			return nil
+		}
+		count := 1
+		if ones == 31 {
+			count = 2
+		}
+		for i := 0; i < count; i++ {
+			a := make(net.IP, 4)
+			copy(a, ip)
+			a[3] += byte(i)
+			out = append(out, a.String())
+		}
+		return out
+	}
+	// Standard case: skip the first (network) and last (broadcast) address.
+	out := []string{}
+	first := network.IP.Mask(network.Mask).To4()
+	if first == nil {
+		return nil
+	}
+	total := 1 << uint(32-ones)
+	for i := 1; i < total-1; i++ {
+		a := make(net.IP, 4)
+		copy(a, first)
+		// 32-bit add with carry, kept simple by treating as a uint32.
+		v := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
+		v += uint32(i)
+		a[0] = byte(v >> 24)
+		a[1] = byte(v >> 16)
+		a[2] = byte(v >> 8)
+		a[3] = byte(v)
+		out = append(out, a.String())
+	}
+	return out
 }
 
 // HasDefaultRoute returns true if a default route is present (IPv4).
