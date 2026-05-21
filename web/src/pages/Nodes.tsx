@@ -204,7 +204,10 @@ export default function Nodes() {
     ssh_host: "",
     ssh_port: 22,
     ssh_user: "root",
+    auth_method: "password" as "password" | "key",
     ssh_password: "",
+    ssh_key: "",
+    ssh_key_passphrase: "",
   });
   const [provResult, setProvResult] = useState<ProvisionResult | null>(null);
   const [provRunning, setProvRunning] = useState(false);
@@ -295,7 +298,15 @@ export default function Nodes() {
   }
 
   function openProvision(n: MediaNode) {
-    setProvForm({ ssh_host: n.host_ip, ssh_port: 22, ssh_user: "root", ssh_password: "" });
+    setProvForm({
+      ssh_host: n.host_ip,
+      ssh_port: 22,
+      ssh_user: "root",
+      auth_method: "password",
+      ssh_password: "",
+      ssh_key: "",
+      ssh_key_passphrase: "",
+    });
     setProvResult(null);
     setProvisioning(n);
   }
@@ -304,7 +315,18 @@ export default function Nodes() {
     setProvRunning(true);
     setProvResult(null);
     try {
-      const res = await api.post<ProvisionResult>(`/api/v1/nodes/${provisioning.id}/provision`, provForm);
+      const body: Record<string, unknown> = {
+        ssh_host: provForm.ssh_host,
+        ssh_port: provForm.ssh_port,
+        ssh_user: provForm.ssh_user,
+      };
+      if (provForm.auth_method === "password") {
+        body.ssh_password = provForm.ssh_password;
+      } else {
+        body.ssh_key = provForm.ssh_key;
+        if (provForm.ssh_key_passphrase) body.ssh_key_passphrase = provForm.ssh_key_passphrase;
+      }
+      const res = await api.post<ProvisionResult>(`/api/v1/nodes/${provisioning.id}/provision`, body);
       setProvResult(res);
       reload();
     } catch (e) {
@@ -573,7 +595,14 @@ export default function Nodes() {
                 {provResult ? "Close" : "Cancel"}
               </button>
               {!provResult && (
-                <button onClick={runProvision} disabled={!provForm.ssh_password} className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60">
+                <button
+                  onClick={runProvision}
+                  disabled={
+                    (provForm.auth_method === "password" && !provForm.ssh_password) ||
+                    (provForm.auth_method === "key" && !provForm.ssh_key)
+                  }
+                  className="rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                >
                   Install agent
                 </button>
               )}
@@ -585,11 +614,10 @@ export default function Nodes() {
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
               The base-app will SSH in as the user below, download the agent binary from{" "}
-              <code className="font-mono">/agent-binary</code>, write{" "}
-              <code className="font-mono">/etc/node-agent/config.yaml</code> with this node's agent
-              token, install a systemd unit, and start it. The password is used once and never stored.
+              <code className="font-mono">/agent-binary</code>, write the agent config, install
+              a systemd unit, and start it. Credentials are used once and never stored.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-500">SSH host</label>
                 <input value={provForm.ssh_host} onChange={(e) => setProvForm({ ...provForm, ssh_host: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm" />
@@ -602,11 +630,73 @@ export default function Nodes() {
                 <label className="block text-xs font-medium text-slate-500">SSH user</label>
                 <input value={provForm.ssh_user} onChange={(e) => setProvForm({ ...provForm, ssh_user: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500">SSH password</label>
-                <input type="password" value={provForm.ssh_password} onChange={(e) => setProvForm({ ...provForm, ssh_password: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-500">Auth method</label>
+              <div className="mt-1 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProvForm({ ...provForm, auth_method: "password" })}
+                  className={`flex-1 rounded border px-3 py-1.5 text-sm ${provForm.auth_method === "password" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                >
+                  Password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProvForm({ ...provForm, auth_method: "key" })}
+                  className={`flex-1 rounded border px-3 py-1.5 text-sm ${provForm.auth_method === "key" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                >
+                  SSH private key
+                </button>
               </div>
             </div>
+
+            {provForm.auth_method === "password" ? (
+              <div>
+                <label className="block text-xs font-medium text-slate-500">SSH password</label>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={provForm.ssh_password}
+                  onChange={(e) => setProvForm({ ...provForm, ssh_password: e.target.value })}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">
+                    SSH private key (PEM / OpenSSH format)
+                  </label>
+                  <textarea
+                    rows={8}
+                    value={provForm.ssh_key}
+                    onChange={(e) => setProvForm({ ...provForm, ssh_key: e.target.value })}
+                    placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    Paste the full key including the BEGIN/END lines. Same as on your laptop's{" "}
+                    <code>~/.ssh/id_ed25519</code> or <code>~/.ssh/id_rsa</code>. The key is held in
+                    memory only for this one request and never saved.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">
+                    Passphrase (only if your key is encrypted)
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={provForm.ssh_key_passphrase}
+                    onChange={(e) => setProvForm({ ...provForm, ssh_key_passphrase: e.target.value })}
+                    placeholder="(blank if your key has no passphrase)"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
         {provRunning && (

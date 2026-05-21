@@ -12,10 +12,12 @@ import (
 )
 
 type provisionRequest struct {
-	SSHHost     string `json:"ssh_host" binding:"required"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user" binding:"required"`
-	SSHPassword string `json:"ssh_password" binding:"required,min=1"`
+	SSHHost          string `json:"ssh_host" binding:"required"`
+	SSHPort          int    `json:"ssh_port"`
+	SSHUser          string `json:"ssh_user" binding:"required"`
+	SSHPassword      string `json:"ssh_password"`
+	SSHKey           string `json:"ssh_key"`
+	SSHKeyPassphrase string `json:"ssh_key_passphrase"`
 }
 
 type provisionResponse struct {
@@ -42,6 +44,10 @@ func (s *Server) provisionNode(c *gin.Context) {
 	var req provisionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.SSHPassword == "" && req.SSHKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "either ssh_password or ssh_key is required"})
 		return
 	}
 
@@ -81,15 +87,17 @@ func (s *Server) provisionNode(c *gin.Context) {
 	controlPlaneURL := scheme + "://" + host
 
 	result := provisioner.Run(ctx, provisioner.Request{
-		Host:            req.SSHHost,
-		Port:            req.SSHPort,
-		User:            req.SSHUser,
-		Password:        req.SSHPassword,
-		NodeID:          id,
-		Role:            role,
-		AgentToken:      agentToken,
-		ControlPlaneURL: controlPlaneURL,
-		BinaryURL:       binaryURL,
+		Host:                 req.SSHHost,
+		Port:                 req.SSHPort,
+		User:                 req.SSHUser,
+		Password:             req.SSHPassword,
+		PrivateKey:           req.SSHKey,
+		PrivateKeyPassphrase: req.SSHKeyPassphrase,
+		NodeID:               id,
+		Role:                 role,
+		AgentToken:           agentToken,
+		ControlPlaneURL:      controlPlaneURL,
+		BinaryURL:            binaryURL,
 	})
 	c.JSON(http.StatusOK, provisionResponse{OK: result.OK, Log: result.Log})
 }

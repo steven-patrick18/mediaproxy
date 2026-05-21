@@ -15,15 +15,17 @@ import (
 )
 
 type Request struct {
-	Host           string // 1.2.3.4
-	Port           int    // 22
-	User           string // root
-	Password       string // SSH password (used only in memory)
-	NodeID         int64
-	Role           string // media | sip_proxy
-	AgentToken     string
-	ControlPlaneURL string
-	BinaryURL      string // e.g. https://mediaproxy.voipzap.com/agent-binary
+	Host                string // 1.2.3.4
+	Port                int    // 22
+	User                string // root
+	Password            string // SSH password (one of Password or PrivateKey is required)
+	PrivateKey          string // PEM-encoded private key (OpenSSH or RSA)
+	PrivateKeyPassphrase string // if the key is encrypted
+	NodeID              int64
+	Role                string // media | sip_proxy
+	AgentToken          string
+	ControlPlaneURL     string
+	BinaryURL           string // e.g. https://mediaproxy.voipzap.com/agent-binary
 }
 
 type Result struct {
@@ -46,11 +48,32 @@ func Run(ctx context.Context, r Request) Result {
 		port = 22
 	}
 
+	// Build auth method: prefer SSH key when provided, otherwise password.
+	var auth []ssh.AuthMethod
+	switch {
+	case r.PrivateKey != "":
+		var signer ssh.Signer
+		var err error
+		if r.PrivateKeyPassphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(r.PrivateKey), []byte(r.PrivateKeyPassphrase))
+		} else {
+			signer, err = ssh.ParsePrivateKey([]byte(r.PrivateKey))
+		}
+		if err != nil {
+			return fail("parse SSH key: %v (is it PEM-encoded? do you need a passphrase?)", err)
+		}
+		auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
+		log("Using SSH key authentication")
+	case r.Password != "":
+		auth = []ssh.AuthMethod{ssh.Password(r.Password)}
+		log("Using SSH password authentication")
+	default:
+		return fail("either ssh_password or ssh_key is required")
+	}
+
 	cfg := &ssh.ClientConfig{
-		User: r.User,
-		Auth: []ssh.AuthMethod{ssh.Password(r.Password)},
-		// We accept any host key here because the operator is establishing
-		// trust by entering a root password.
+		User:            r.User,
+		Auth:            auth,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
