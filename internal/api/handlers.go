@@ -11,8 +11,15 @@ import (
 // serveAgentBinary streams the node-agent linux/amd64 binary. The binary
 // is just a Go program; it's harmless without a matching agent_token, so
 // this endpoint doesn't require auth.
+//
+// IMPORTANT: this path must match the Makefile's build-agent-static target
+// (bin/node-agent-linux-amd64). The host's build target for the local
+// platform (bin/node-agent) was used here previously, which silently
+// served a stale binary whenever the Linux cross-build was newer than the
+// host-platform build. Caused several hours of phantom outages where
+// "re-provision" was actually installing the same old agent every time.
 func (s *Server) serveAgentBinary(c *gin.Context) {
-	const path = "/opt/mediaproxy/bin/node-agent"
+	const path = "/opt/mediaproxy/bin/node-agent-linux-amd64"
 	c.Header("Content-Disposition", `attachment; filename="node-agent"`)
 	c.Header("Content-Type", "application/octet-stream")
 	c.File(path)
