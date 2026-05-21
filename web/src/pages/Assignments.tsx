@@ -18,9 +18,14 @@ export default function Assignments() {
     group_id: 0,
     client_id: 0,
     carrier_id: 0,
-    rotation_strategy: "round_robin",
+    rotation_strategy: "least_used",
   });
   const [busy, setBusy] = useState(false);
+  // pendingStrategy[id] = the user's unsaved choice for that row. Empty
+  // means no pending change. We don't push to the server until the user
+  // clicks Save — gives a chance to reconsider before the rotation flips.
+  const [pendingStrategy, setPendingStrategy] = useState<Record<number, string>>({});
+  const [savingId, setSavingId] = useState<number | null>(null);
 
   function reload() {
     Promise.all([
@@ -45,7 +50,7 @@ export default function Assignments() {
     setBusy(true);
     try {
       await api.post("/api/v1/assignments", form);
-      setForm({ group_id: 0, client_id: 0, carrier_id: 0, rotation_strategy: "round_robin" });
+      setForm({ group_id: 0, client_id: 0, carrier_id: 0, rotation_strategy: "least_used" });
       setShowForm(false);
       reload();
     } catch (e) {
@@ -54,14 +59,44 @@ export default function Assignments() {
       setBusy(false);
     }
   }
-  async function endIt(id: number) {
-    if (!confirm("End this assignment?")) return;
+  async function endIt(id: number, status: string) {
+    const prompt =
+      status === "ended"
+        ? "Permanently delete this ended assignment? It will be removed from the database."
+        : "End this assignment? It will stop routing immediately. You can hard-delete it after.";
+    if (!confirm(prompt)) return;
     try {
       await api.del<void>(`/api/v1/assignments/${id}`);
       reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "end failed");
+      setErr(e instanceof Error ? e.message : "delete failed");
     }
+  }
+  async function saveStrategy(id: number) {
+    const strategy = pendingStrategy[id];
+    if (!strategy) return;
+    setErr(null);
+    setSavingId(id);
+    try {
+      const updated = await api.patch<Assignment>(`/api/v1/assignments/${id}`, { rotation_strategy: strategy });
+      setRows(rows.map((r) => (r.id === id ? updated : r)));
+      setPendingStrategy((p) => {
+        const next = { ...p };
+        delete next[id];
+        return next;
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "strategy update failed");
+    } finally {
+      setSavingId(null);
+    }
+  }
+  function cancelStrategy(id: number) {
+    setPendingStrategy((p) => {
+      const next = { ...p };
+      delete next[id];
+      return next;
+    });
   }
   const clientName = (id: number) => clients.find((c) => c.id === id)?.name ?? `#${id}`;
   const carrierName = (id: number) => carriers.find((c) => c.id === id)?.name ?? `#${id}`;
@@ -123,10 +158,10 @@ export default function Assignments() {
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">Strategy</label>
             <select value={form.rotation_strategy} onChange={(e) => setForm({ ...form, rotation_strategy: e.target.value })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
-              <option value="round_robin">round robin</option>
-              <option value="random">random</option>
-              <option value="sticky">sticky</option>
-              <option value="least_used">least used</option>
+              <option value="least_used">auto-balance (recommended — evens load across all IPs)</option>
+              <option value="round_robin">round robin (sequential cycle)</option>
+              <option value="random">random (uniform random per call)</option>
+              <option value="sticky">sticky (same IP per client)</option>
               <option value="health_weighted">health weighted</option>
             </select>
           </div>
@@ -162,12 +197,56 @@ export default function Assignments() {
                 <td className="px-4 py-2">{clientName(a.client_id)}</td>
                 <td className="px-4 py-2">{carrierName(a.carrier_id)}</td>
                 <td className="px-4 py-2">{groupName(a.group_id)}</td>
-                <td className="px-4 py-2 text-xs">{a.rotation_strategy}</td>
+                <td className="px-4 py-2 text-xs">
+                  {a.status === "active" ? (
+                    (() => {
+                      const pending = pendingStrategy[a.id];
+                      const dirty = pending !== undefined && pending !== a.rotation_strategy;
+                      return (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={pending ?? a.rotation_strategy}
+                            onChange={(e) => setPendingStrategy({ ...pendingStrategy, [a.id]: e.target.value })}
+                            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                          >
+                            <option value="round_robin">round robin</option>
+                            <option value="random">random</option>
+                            <option value="sticky">sticky</option>
+                            <option value="least_used">least used</option>
+                            <option value="health_weighted">health weighted</option>
+                          </select>
+                          {dirty && (
+                            <>
+                              <button
+                                onClick={() => saveStrategy(a.id)}
+                                disabled={savingId === a.id}
+                                className="rounded bg-brand-600 px-2 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                              >
+                                {savingId === a.id ? "Saving…" : "Save"}
+                              </button>
+                              <button
+                                onClick={() => cancelStrategy(a.id)}
+                                className="text-xs text-slate-500 hover:underline"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    a.rotation_strategy
+                  )}
+                </td>
                 <td className="px-4 py-2">{a.status}</td>
                 <td className="px-4 py-2 text-xs text-slate-500">{new Date(a.assigned_at).toLocaleString()}</td>
                 <td className="px-4 py-2 text-right">
                   {a.status === "active" && (
-                    <button onClick={() => endIt(a.id)} className="text-xs text-red-600 hover:underline">End</button>
+                    <button onClick={() => endIt(a.id, a.status)} className="text-xs text-red-600 hover:underline">End</button>
+                  )}
+                  {a.status === "ended" && (
+                    <button onClick={() => endIt(a.id, a.status)} className="text-xs text-red-600 hover:underline">Delete</button>
                   )}
                 </td>
               </tr>

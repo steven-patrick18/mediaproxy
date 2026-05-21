@@ -74,21 +74,74 @@ func (s *Server) createAssignment(c *gin.Context) {
 	c.JSON(http.StatusCreated, a)
 }
 
-// "Delete" marks the row ended rather than hard-deleting so we keep an audit trail.
+type patchAssignmentRequest struct {
+	RotationStrategy *string `json:"rotation_strategy" binding:"omitempty,oneof=round_robin random sticky least_used health_weighted"`
+}
+
+// PATCH /api/v1/assignments/:id — update an active assignment's
+// rotation_strategy. Only active rows can be patched; ended rows are
+// immutable for audit. Returns the updated row so the UI can refresh
+// without a separate GET.
+func (s *Server) patchAssignment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req patchAssignmentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var a Assignment
+	err = s.deps.PG.QueryRow(c.Request.Context(), `
+		UPDATE assignments
+		   SET rotation_strategy = COALESCE($2, rotation_strategy),
+		       rotation_cursor   = 0
+		 WHERE id = $1 AND status = 'active'
+		 RETURNING id, group_id, client_id, carrier_id, rotation_strategy, status, assigned_by, assigned_at
+	`, id, req.RotationStrategy).Scan(
+		&a.ID, &a.GroupID, &a.ClientID, &a.CarrierID, &a.RotationStrategy, &a.Status, &a.AssignedBy, &a.AssignedAt,
+	)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "assignment not found or not active"})
+		return
+	}
+	c.JSON(http.StatusOK, a)
+}
+
+// endAssignment is a two-stage delete:
+//   - active row → soft-end (status='ended') so the audit trail keeps the
+//     row + assigned_at. Routing immediately stops considering it.
+//   - already-ended row → hard delete. Operator must End first, then click
+//     Delete again — protects against accidentally removing a live rotation
+//     with one stray click.
 func (s *Server) endAssignment(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
 		return
 	}
-	tag, err := s.deps.PG.Exec(c.Request.Context(),
-		`UPDATE assignments SET status = 'ended' WHERE id = $1 AND status != 'ended'`, id)
+	// Check current status to decide soft-end vs hard-delete.
+	var status string
+	err = s.deps.PG.QueryRow(c.Request.Context(),
+		`SELECT status FROM assignments WHERE id = $1`, id).Scan(&status)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found or already ended"})
+	if status == "ended" {
+		if _, err := s.deps.PG.Exec(c.Request.Context(),
+			`DELETE FROM assignments WHERE id = $1 AND status = 'ended'`, id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
+	if _, err := s.deps.PG.Exec(c.Request.Context(),
+		`UPDATE assignments SET status = 'ended' WHERE id = $1`, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Status(http.StatusNoContent)

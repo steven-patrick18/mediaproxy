@@ -54,11 +54,29 @@ const nodeStatusExpr = `
 `
 
 func (s *Server) listNodes(c *gin.Context) {
+	// active_calls is computed live from the active_calls table:
+	//   - sip_proxy: count rows whose node_id matches (the SipProxy is
+	//     the agent that posted /call-start so all rows it spawned carry
+	//     its node_id).
+	//   - media: count rows whose media_ip belongs to this media node
+	//     (via node_ips.ip_address). The active_calls.node_id column
+	//     reports the SIGNALING node, not the media-handling node, so a
+	//     plain node_id match would always return 0 for media nodes.
+	// The agent's rtpengine session-count path is separately broken
+	// (parse keys mismatch), so we ignore the stale column entirely.
 	q := `
 		SELECT n.id, n.name, n.role, host(n.host_ip), n.region, n.nic_gbps, n.max_calls,
 		       n.transcoding_enabled, ` + nodeStatusExpr + ` AS effective_status,
 		       n.last_seen_at, n.created_at,
-		       n.active_calls, n.cpu_pct, n.ram_pct,
+		       CASE
+		         WHEN n.role = 'media' THEN
+		           (SELECT COUNT(*) FROM active_calls a
+		             JOIN node_ips ni ON ni.ip_address = a.media_ip
+		            WHERE ni.node_id = n.id)
+		         ELSE
+		           (SELECT COUNT(*) FROM active_calls WHERE node_id = n.id)
+		       END::int AS active_calls,
+		       n.cpu_pct, n.ram_pct,
 		       n.net_in_mbps, n.net_out_mbps, n.packet_loss_pct,
 		       n.uptime_seconds, n.agent_version,
 		       COALESCE(n.ips_bound, 0),

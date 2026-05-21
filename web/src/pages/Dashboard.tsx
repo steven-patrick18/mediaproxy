@@ -47,8 +47,16 @@ export default function Dashboard() {
 
   const onlineNodes = nodes.filter((n) => n.status === "online").length;
   const drainingNodes = nodes.filter((n) => n.status === "draining").length;
-  const totalCalls = nodes.reduce((s, n) => s + (n.active_calls ?? 0), 0);
-  const maxCalls = nodes.reduce((s, n) => s + n.max_calls, 0);
+  // Each call has one signaling row (sip_proxy) and one media row
+  // (media). Summing both double-counts every call. Use sip_proxy only
+  // for the active count and media only for the capacity — media RTP
+  // capacity is the real bottleneck.
+  const totalCalls = nodes
+    .filter((n) => n.role === "sip_proxy")
+    .reduce((s, n) => s + (n.active_calls ?? 0), 0);
+  const maxCalls = nodes
+    .filter((n) => n.role === "media")
+    .reduce((s, n) => s + n.max_calls, 0);
   const totalBw = nodes.reduce((s, n) => s + Number(n.net_in_mbps ?? 0) + Number(n.net_out_mbps ?? 0), 0);
   const ipsActive = nodeIPs.filter((ip) => ip.status === "active").length;
   const ipsFlagged = nodeIPs.filter((ip) => ip.status === "flagged").length;

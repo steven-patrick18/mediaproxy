@@ -132,12 +132,33 @@ function NodeCard({
         <Bar label="IPs bound" pct={pct(n.ips_bound, n.ips_total || 1)} value={`${n.ips_bound} / ${n.ips_total}`} tone="info" />
       </div>
 
-      <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-500">
+      <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
         <div className="flex items-center gap-2">
           <span className="text-slate-400">last hour CPU:</span>
           <span className="text-brand-600">
             <Spark data={(history ?? []).map((p) => Number(p.cpu_pct ?? 0))} width={100} height={20} />
           </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-slate-400">net in (Mbps):</span>
+          <span className="text-sky-600">
+            <Spark data={(history ?? []).map((p) => Number(p.net_in_mbps ?? 0))} width={100} height={20} />
+          </span>
+          <span className="font-mono text-slate-600">{netIn.toFixed(2)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-slate-400">net out (Mbps):</span>
+          <span className="text-emerald-600">
+            <Spark data={(history ?? []).map((p) => Number(p.net_out_mbps ?? 0))} width={100} height={20} />
+          </span>
+          <span className="font-mono text-slate-600">{netOut.toFixed(2)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-slate-400">active calls:</span>
+          <span className="text-violet-600">
+            <Spark data={(history ?? []).map((p) => Number(p.active_calls ?? 0))} width={100} height={20} />
+          </span>
+          <span className="font-mono text-slate-600">{calls}</span>
         </div>
       </div>
 
@@ -351,10 +372,17 @@ export default function Nodes() {
   }
 
   const cluster = useMemo(() => {
+    // Each call has one signaling leg (sip_proxy) and one media leg
+    // (media). Summing both double-counts. Use sip_proxy for the active
+    // count and media for the capacity — RTP capacity is the real cap.
     return nodes.reduce(
       (acc, n) => {
-        acc.calls += n.active_calls ?? 0;
-        acc.max += n.max_calls;
+        if (n.role === "sip_proxy") {
+          acc.calls += n.active_calls ?? 0;
+        }
+        if (n.role === "media") {
+          acc.max += n.max_calls;
+        }
         if (n.status === "online") acc.online += 1;
         if (n.status === "draining") acc.draining += 1;
         if (n.status === "offline") acc.offline += 1;
