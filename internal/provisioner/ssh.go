@@ -197,9 +197,13 @@ WantedBy=multi-user.target
 		return fail("write unit: %v", err)
 	}
 
-	log("Enabling + starting node-agent")
+	log("Enabling + (re)starting node-agent")
+	// 'enable --now' only *starts* if the service isn't already running, so on a
+	// re-provision the old PID would keep executing the in-memory old binary
+	// even after we replaced the file on disk. Use restart so the new binary
+	// actually takes effect every time.
 	if err := run(client,
-		"systemctl daemon-reload && systemctl enable --now node-agent && sleep 2 && systemctl is-active node-agent",
+		"systemctl daemon-reload && systemctl enable node-agent && systemctl restart node-agent && sleep 2 && systemctl is-active node-agent",
 		&b); err != nil {
 		return fail("systemd: %v", err)
 	}
