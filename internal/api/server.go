@@ -133,6 +133,7 @@ func (s *Server) Router() *gin.Engine {
 		a.GET("/cdrs", s.listCDRs)
 		a.GET("/cdrs/stats", s.cdrStats)
 		a.GET("/calls/active", s.listActiveCalls)
+		a.GET("/route-quality", s.routeQuality)
 
 		// Admin users
 		a.GET("/admin-users", s.listAdminUsers)

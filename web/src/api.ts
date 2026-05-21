@@ -110,6 +110,17 @@ export interface CDRStats {
   asr_pct: number;
   acd_seconds?: number | null;
 }
+export interface CarrierQuality {
+  carrier_id: number;
+  carrier_name: string;
+  total: number;
+  answered: number;
+  asr_pct: number;
+  acd_seconds: number;
+  cause_mix: Record<string, number>;
+  grade: string;
+  grade_reasons: string[];
+}
 export interface ActiveCallRow {
   id: number;
   call_id: string;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type ActiveCallRow, type Carrier, type Client } from "../api";
+import { api, type ActiveCallRow, type Carrier, type CarrierQuality, type Client } from "../api";
 import { RefreshIcon } from "../components/Icons";
 import Help from "../components/Help";
 
@@ -53,6 +53,8 @@ export default function Privacy() {
   const [active, setActive] = useState<ActiveCallRow[]>([]);
   const [carriers, setCarriers] = useState<Carrier[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [quality, setQuality] = useState<CarrierQuality[]>([]);
+  const [qualityWindow, setQualityWindow] = useState<"1h" | "24h" | "168h">("24h");
   const [err, setErr] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
 
@@ -61,15 +63,17 @@ export default function Privacy() {
       api.get<ActiveCallRow[]>("/api/v1/calls/active"),
       api.get<Carrier[]>("/api/v1/carriers"),
       api.get<Client[]>("/api/v1/clients"),
+      api.get<CarrierQuality[]>(`/api/v1/route-quality?window=${qualityWindow}`),
     ])
-      .then(([a, c, cl]) => {
+      .then(([a, c, cl, q]) => {
         setActive(a);
         setCarriers(c);
         setClients(cl);
+        setQuality(q);
         setErr(null);
       })
       .catch((e) => setErr(e.message));
-  }, []);
+  }, [qualityWindow]);
 
   useEffect(() => {
     reload();
@@ -285,6 +289,120 @@ export default function Privacy() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* Section 2b — Route quality (CDR-derived) */}
+      <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 className="flex items-center text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Route quality
+              <Help>
+                <p className="mb-1 font-medium">What this scores</p>
+                Per-carrier composite grade (A–F) computed from completed-call records over the
+                selected window. Penalises low ASR, very-low ACD (premature drops or SIM-box
+                detection), suspiciously high ASR (false-answer fraud), and high rates of 480 /
+                503 / non-standard cause codes.
+                <p className="mb-1 mt-2 font-medium">What it does NOT prove</p>
+                Passive observation can't definitively distinguish "Tier 1 direct" from "grey
+                route". The grade flags <em>suspicion</em>. Definitive Tier-1 verification needs
+                active probing — synthetic test calls to known-good destinations comparing PDD &amp;
+                MOS to a baseline. That's a separate feature.
+                <p className="mb-1 mt-2 font-medium">Insufficient data?</p>
+                Carriers with fewer than 20 calls in the window show grade <code>—</code>; not
+                enough signal to score honestly.
+              </Help>
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Per-carrier scorecard over the selected window. Heuristics, not proof — see the
+              tooltip for the boundaries.
+            </p>
+          </div>
+          <select
+            value={qualityWindow}
+            onChange={(e) => setQualityWindow(e.target.value as typeof qualityWindow)}
+            className="rounded border border-slate-300 px-2 py-1 text-sm"
+          >
+            <option value="1h">last 1h</option>
+            <option value="24h">last 24h</option>
+            <option value="168h">last 7d</option>
+          </select>
+        </div>
+        <div className="mt-3 overflow-hidden rounded border border-slate-200">
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2">Carrier</th>
+                <th className="px-3 py-2">Grade</th>
+                <th className="px-3 py-2 text-right">Calls</th>
+                <th className="px-3 py-2 text-right">ASR</th>
+                <th className="px-3 py-2 text-right">ACD</th>
+                <th className="px-3 py-2">Cause-code mix</th>
+                <th className="px-3 py-2">Reasons</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {quality.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
+                    No carriers defined yet.
+                  </td>
+                </tr>
+              )}
+              {quality.map((q) => (
+                <tr key={q.carrier_id}>
+                  <td className="px-3 py-2 font-medium">{q.carrier_name}</td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`inline-block min-w-[1.75rem] rounded px-2 py-0.5 text-center font-bold ${
+                        q.grade === "A"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : q.grade === "B"
+                            ? "bg-lime-100 text-lime-800"
+                            : q.grade === "C"
+                              ? "bg-amber-100 text-amber-800"
+                              : q.grade === "D"
+                                ? "bg-orange-100 text-orange-800"
+                                : q.grade === "F"
+                                  ? "bg-rose-100 text-rose-800"
+                                  : "bg-slate-100 text-slate-500"
+                      }`}
+                    >
+                      {q.grade}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{q.total}</td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {q.total > 0 ? `${q.asr_pct.toFixed(1)}%` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {q.answered > 0 ? `${q.acd_seconds.toFixed(0)}s` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {q.total === 0 ? (
+                      <span className="text-slate-400">—</span>
+                    ) : (
+                      <span className="font-mono text-slate-600">
+                        {(["200", "486", "487", "480", "503", "other"] as const)
+                          .filter((k) => (q.cause_mix[k] ?? 0) > 0)
+                          .map((k) => `${k}:${q.cause_mix[k]}`)
+                          .join("  ")}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">
+                    {q.grade_reasons.join(" · ")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[11px] text-slate-400">
+          Phase 1 of route-quality monitoring. Next phases (planned): per-call PDD from Kamailio
+          timing, codec-locking detection from SDP, RTP/MOS &amp; jitter from RTPEngine, and full
+          SIP capture via HOMER for SIP-ladder drill-down.
+        </p>
       </section>
 
       {/* Section 3 — Live feed */}
