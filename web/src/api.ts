@@ -129,6 +129,8 @@ export interface CarrierQuality {
   rtp_samples: number;
   grade: string;
   grade_reasons: string[];
+  tier: string; // A=Tier-1 / B=Tier-2 / C=Tier-3 grey / "—" insufficient
+  tier_reasons: string[];
 }
 export interface ActiveCallRow {
   id: number;
@@ -146,6 +148,9 @@ export interface ActiveCallRow {
   media_transport?: string | null;
   media_endpoint_ip?: string | null;
   crypto_suite?: string | null;
+  reinvite_count: number;
+  last_reinvite_at?: string | null;
+  last_reinvite_endpoint?: string | null;
 }
 export interface ClientDetail extends Client {
   signaling_ip_id: number | null;

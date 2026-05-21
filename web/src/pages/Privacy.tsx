@@ -46,7 +46,20 @@ interface CarrierRow {
   status: string;
   count: number;
   severity: Severity;
-  transport: string | null;
+  mediaProxied: number; // calls whose audio is rewritten through our MediaNode
+  reinvites: number; // calls with at least one mid-call SDP change
+}
+
+// MediaNode IP prefixes — calls whose media_ip falls inside these subnets
+// are "audio-proxied" (the carrier sees a MediaNode IP, not the dialer's
+// real IP). Hardcoded heuristic for the current cluster; future work:
+// derive from the /api/v1/nodes response so adding a new media node
+// doesn't need a UI change.
+const MEDIA_NODE_PREFIXES = ["67.215.233."];
+
+function isMediaProxied(mediaIP?: string | null): boolean {
+  if (!mediaIP) return false;
+  return MEDIA_NODE_PREFIXES.some((p) => mediaIP.startsWith(p));
 }
 
 export default function Privacy() {
@@ -87,42 +100,31 @@ export default function Privacy() {
   const carrierName = (id: number | null | undefined) =>
     id ? carriers.find((c) => c.id === id)?.name ?? `#${id}` : "—";
 
-  // Aggregate per carrier. We also track the dominant transport per carrier
-  // (most common across that carrier's active calls) so the table can show
-  // whether the leg is plain RTP, SDES-SRTP, or DTLS-SRTP.
+  // Aggregate per carrier: total calls, how many have audio rewritten
+  // through our MediaNode (privacy preserved), how many had a mid-call
+  // re-INVITE (possible bridge/fork). Replaced the old "transport" column
+  // because every wholesale carrier is plain-RTP — that column had a
+  // 100% noise rate and gave no real signal.
   const perCarrier: CarrierRow[] = useMemo(() => {
-    const counts = new Map<number, number>();
-    const transports = new Map<number, Map<string, number>>();
+    const tally = new Map<number, { count: number; proxied: number; reinvites: number }>();
     for (const r of active) {
       if (!r.carrier_id) continue;
-      counts.set(r.carrier_id, (counts.get(r.carrier_id) ?? 0) + 1);
-      const tkey = (r.media_transport ?? "unknown").toUpperCase();
-      let m = transports.get(r.carrier_id);
-      if (!m) {
-        m = new Map();
-        transports.set(r.carrier_id, m);
-      }
-      m.set(tkey, (m.get(tkey) ?? 0) + 1);
+      const cur = tally.get(r.carrier_id) ?? { count: 0, proxied: 0, reinvites: 0 };
+      cur.count++;
+      if (isMediaProxied(r.media_ip)) cur.proxied++;
+      if ((r.reinvite_count ?? 0) > 0) cur.reinvites++;
+      tally.set(r.carrier_id, cur);
     }
     const list: CarrierRow[] = carriers.map((c) => {
-      let dominantTransport: string | null = null;
-      const m = transports.get(c.id);
-      if (m) {
-        let best = 0;
-        for (const [k, v] of m) {
-          if (v > best) {
-            best = v;
-            dominantTransport = k === "UNKNOWN" ? null : k;
-          }
-        }
-      }
+      const t = tally.get(c.id) ?? { count: 0, proxied: 0, reinvites: 0 };
       return {
         id: c.id,
         name: c.name,
         status: c.status,
-        count: counts.get(c.id) ?? 0,
+        count: t.count,
         severity: "exposed" as Severity,
-        transport: dominantTransport,
+        mediaProxied: t.proxied,
+        reinvites: t.reinvites,
       };
     });
     list.sort((a, b) => b.count - a.count);
@@ -130,24 +132,38 @@ export default function Privacy() {
   }, [active, carriers]);
 
   const totalCalls = active.length;
-  // A call is only "private" if its negotiated transport is DTLS-SRTP AND
-  // the media goes direct (no carrier). For wholesale traffic this stays 0;
-  // we don't fake it.
-  const privateCalls = active.filter((r) => {
-    const t = describeTransport(r.media_transport);
-    return !r.carrier_id && !t.carrierCanHear;
-  }).length;
-  const exposedCalls = totalCalls - privateCalls;
-  const exposedPct = totalCalls > 0 ? Math.round((exposedCalls / totalCalls) * 100) : 0;
+  // "Audio behind MediaNode" = the privacy guarantee actually offered by
+  // this product. If the call's media_ip is one of our MediaNode pool IPs,
+  // the carrier sees that IP — not the dialer's real address.
+  const proxiedCalls = active.filter((r) => isMediaProxied(r.media_ip)).length;
+  const proxiedPct = totalCalls > 0 ? Math.round((proxiedCalls / totalCalls) * 100) : 0;
+  const leakingCalls = totalCalls - proxiedCalls;
+
+  // Mid-call SDP change events — the strongest passively-observable signal
+  // of a third-party bridge / fork / NAT roam. Count of currently-active
+  // calls that have had at least one re-INVITE after the initial offer.
+  const reinviteCalls = active.filter((r) => (r.reinvite_count ?? 0) > 0).length;
 
   const overallStatus =
     totalCalls === 0
       ? { dot: "⚪", label: "No active calls", tone: "text-slate-500" }
-      : exposedPct >= 80
-        ? { dot: "🔴", label: "Most calls are exposed", tone: "text-rose-700" }
-        : exposedPct >= 40
-          ? { dot: "🟠", label: "Mixed — some calls exposed", tone: "text-amber-700" }
-          : { dot: "🟢", label: "Most calls private", tone: "text-emerald-700" };
+      : leakingCalls > 0
+        ? {
+            dot: "🔴",
+            label: `${leakingCalls} call(s) bypassing MediaNode — dialer IP exposed`,
+            tone: "text-rose-700",
+          }
+        : reinviteCalls > 0
+          ? {
+              dot: "🟠",
+              label: `${reinviteCalls} call(s) renegotiated mid-stream`,
+              tone: "text-amber-700",
+            }
+          : {
+              dot: "🟢",
+              label: "All active calls proxied through MediaNode, no mid-call changes",
+              tone: "text-emerald-700",
+            };
 
   // Sort live feed by start time, newest first.
   const liveFeed = [...active]
@@ -201,37 +217,63 @@ export default function Privacy() {
       {/* Section 1 — Overall health */}
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Overall health</h3>
-        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-4">
           <div>
-            <div className="text-xs uppercase tracking-wide text-slate-500">Total calls now</div>
+            <div className="text-xs uppercase tracking-wide text-slate-500">Active calls now</div>
             <div className="mt-1 text-3xl font-semibold text-slate-800">{totalCalls}</div>
           </div>
           <div>
             <div className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-500">
-              Calls they can hear
+              Audio via MediaNode
               <Help>
-                A wholesale carrier's media gateway sits in the audio path of every call routed
-                through them. That gateway <strong>could</strong> record. This count includes any
-                call assigned a carrier_id in the panel.
+                Calls whose RTP is rewritten through our MediaNode pool. The carrier sees a
+                MediaNode IP, never the dialer's real address. This is the privacy guarantee the
+                product actually delivers. Should be 100% if rotation + rtpengine are healthy.
               </Help>
             </div>
             <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-3xl font-semibold text-rose-700">{exposedCalls}</span>
-              <span className="text-sm text-slate-500">({exposedPct}%)</span>
+              <span
+                className={`text-3xl font-semibold ${proxiedPct >= 99 ? "text-emerald-700" : proxiedPct >= 80 ? "text-amber-700" : "text-rose-700"}`}
+              >
+                {proxiedCalls}
+              </span>
+              <span className="text-sm text-slate-500">
+                / {totalCalls} ({proxiedPct}%)
+              </span>
             </div>
           </div>
           <div>
             <div className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-500">
-              Private calls
+              Dialer IP leaked
               <Help>
-                Direct peer-to-peer media with no carrier middlebox. Almost never exists in
-                conventional SIP trunking; would require media-bypass / ICE-direct + DTLS-SRTP
-                with verified fingerprints. Always <code>0</code> until that's implemented.
+                Calls whose media_ip is NOT a MediaNode IP — usually means rtpengine wasn't
+                invoked and the SDP still carried the dialer's real audio endpoint. Carrier sees
+                the dialer directly for these. Should be 0.
               </Help>
             </div>
             <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-3xl font-semibold text-emerald-700">{privateCalls}</span>
-              <span className="text-sm text-slate-500">(0%)</span>
+              <span
+                className={`text-3xl font-semibold ${leakingCalls === 0 ? "text-emerald-700" : "text-rose-700"}`}
+              >
+                {leakingCalls}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-500">
+              Mid-call renegotiations
+              <Help>
+                Calls that received a mid-stream re-INVITE (SDP changed during the call). Strong
+                passively-observable signal of a third-party bridge joining, a carrier-side fork,
+                or a NAT roam. Investigate by opening the SIP ladder from CDRs.
+              </Help>
+            </div>
+            <div className="mt-1 flex items-baseline gap-2">
+              <span
+                className={`text-3xl font-semibold ${reinviteCalls === 0 ? "text-slate-700" : "text-amber-700"}`}
+              >
+                {reinviteCalls}
+              </span>
             </div>
           </div>
         </div>
@@ -252,8 +294,20 @@ export default function Privacy() {
               <tr>
                 <th className="px-3 py-2">Company</th>
                 <th className="px-3 py-2 text-right">Calls</th>
-                <th className="px-3 py-2">Can they hear?</th>
-                <th className="px-3 py-2">Encrypted?</th>
+                <th className="px-3 py-2">
+                  Audio via MediaNode
+                  <Help>
+                    Fraction of this carrier's active calls whose RTP is rewritten by our
+                    MediaNode (dialer's real IP hidden). 100% = privacy guarantee holding.
+                  </Help>
+                </th>
+                <th className="px-3 py-2">
+                  Mid-call changes
+                  <Help>
+                    Number of currently-active calls with the carrier that received a re-INVITE
+                    (SDP renegotiated mid-stream). Possible bridge / fork / NAT roam.
+                  </Help>
+                </th>
                 <th className="px-3 py-2">Status</th>
               </tr>
             </thead>
@@ -267,21 +321,38 @@ export default function Privacy() {
               )}
               {perCarrier.map((c) => {
                 const sev: Severity = c.count === 0 ? "unknown" : "exposed";
-                const t = describeTransport(c.transport);
+                const proxyPct =
+                  c.count > 0 ? Math.round((c.mediaProxied / c.count) * 100) : 0;
+                const proxyTone =
+                  c.count === 0
+                    ? "text-slate-400"
+                    : proxyPct === 100
+                      ? "text-emerald-700"
+                      : proxyPct >= 80
+                        ? "text-amber-700"
+                        : "text-rose-700";
+                const reinviteTone =
+                  c.reinvites === 0
+                    ? "text-slate-500"
+                    : c.reinvites > 0 && c.count > 0 && c.reinvites / c.count > 0.05
+                      ? "text-rose-700 font-medium"
+                      : "text-amber-700";
                 return (
                   <tr key={c.id}>
                     <td className="px-3 py-2 font-medium">{c.name}</td>
                     <td className="px-3 py-2 text-right font-mono">{c.count}</td>
-                    <td className="px-3 py-2 text-xs">
+                    <td className={`px-3 py-2 text-xs ${proxyTone}`}>
                       {c.count === 0 ? (
-                        <span className="text-slate-400">—</span>
-                      ) : t.carrierCanHear ? (
-                        <span className="text-rose-700">YES — carrier in audio path</span>
+                        <span>—</span>
                       ) : (
-                        <span className="text-emerald-700">No — DTLS-SRTP end-to-end</span>
+                        <span>
+                          {c.mediaProxied} / {c.count} ({proxyPct}%)
+                        </span>
                       )}
                     </td>
-                    <td className={`px-3 py-2 text-xs font-medium ${t.tone}`}>{t.label}</td>
+                    <td className={`px-3 py-2 text-xs ${reinviteTone}`}>
+                      {c.count === 0 ? <span className="text-slate-400">—</span> : c.reinvites}
+                    </td>
                     <td className="px-3 py-2">{severityBadge(sev)}</td>
                   </tr>
                 );
@@ -333,6 +404,16 @@ export default function Privacy() {
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2">Carrier</th>
+                <th className="px-3 py-2">
+                  Tier
+                  <Help>
+                    Route class inference (A=Tier-1 / direct, B=Tier-2, C=Tier-3 grey). Heuristic
+                    from PDD, codec preservation, MOS, ASR/ACD shape, and cause-code purity.
+                    Distinct from Grade — a Tier-1 route can have a bad day (Grade C) and a grey
+                    route can score Grade A statistically. Hover/expand the reasons to see what
+                    drove the call.
+                  </Help>
+                </th>
                 <th className="px-3 py-2">Grade</th>
                 <th className="px-3 py-2 text-right">Calls</th>
                 <th className="px-3 py-2 text-right">ASR</th>
@@ -347,7 +428,7 @@ export default function Privacy() {
             <tbody className="divide-y divide-slate-100">
               {quality.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
                     No carriers defined yet.
                   </td>
                 </tr>
@@ -370,6 +451,21 @@ export default function Privacy() {
                 return (
                   <tr key={q.carrier_id}>
                     <td className="px-3 py-2 font-medium">{q.carrier_name}</td>
+                    <td className="px-3 py-2" title={q.tier_reasons.join(" · ")}>
+                      <span
+                        className={`inline-block min-w-[1.75rem] rounded px-2 py-0.5 text-center font-bold ${
+                          q.tier === "A"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : q.tier === "B"
+                              ? "bg-amber-100 text-amber-800"
+                              : q.tier === "C"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {q.tier}
+                      </span>
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-block min-w-[1.75rem] rounded px-2 py-0.5 text-center font-bold ${
@@ -468,8 +564,8 @@ export default function Privacy() {
                 <th className="px-3 py-2">Company</th>
                 <th className="px-3 py-2">Client</th>
                 <th className="px-3 py-2">From → To</th>
-                <th className="px-3 py-2">Transport</th>
-                <th className="px-3 py-2">Can hear?</th>
+                <th className="px-3 py-2">Media via</th>
+                <th className="px-3 py-2">Mid-call</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -481,8 +577,8 @@ export default function Privacy() {
                 </tr>
               )}
               {liveFeed.map((r) => {
-                const t = describeTransport(r.media_transport);
-                const carrierCanHear = !!r.carrier_id || t.carrierCanHear;
+                const proxied = isMediaProxied(r.media_ip);
+                const ri = r.reinvite_count ?? 0;
                 return (
                   <tr key={r.id}>
                     <td className="px-3 py-1.5 text-xs text-slate-500">
@@ -493,12 +589,17 @@ export default function Privacy() {
                     <td className="px-3 py-1.5 font-mono text-xs">
                       {r.ani ?? "?"} → {r.dnis ?? "?"}
                     </td>
-                    <td className={`px-3 py-1.5 text-xs font-medium ${t.tone}`}>{t.label}</td>
+                    <td
+                      className={`px-3 py-1.5 text-xs font-mono ${proxied ? "text-emerald-700" : "text-rose-700"}`}
+                      title={proxied ? "Audio proxied — carrier sees MediaNode IP" : "Audio not proxied — carrier sees dialer IP"}
+                    >
+                      {r.media_ip ?? "—"}
+                    </td>
                     <td className="px-3 py-1.5 text-xs">
-                      {carrierCanHear ? (
-                        <span className="text-rose-700">🔴 Yes</span>
+                      {ri === 0 ? (
+                        <span className="text-slate-400">—</span>
                       ) : (
-                        <span className="text-emerald-700">🟢 No — direct + DTLS-SRTP</span>
+                        <span className="text-amber-700">🟠 {ri}×</span>
                       )}
                     </td>
                   </tr>
@@ -512,30 +613,53 @@ export default function Privacy() {
       {/* Section 4 — Alerts */}
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          Watch out (alerts, last 15 min)
+          Watch out
         </h3>
         {(() => {
+          const reinviteCalls = active.filter((r) => r.reinvite_count > 0);
           const plainCalls = active.filter((r) => {
             const t = describeTransport(r.media_transport);
             return t.label.includes("plain");
           });
-          if (plainCalls.length === 0) {
+          if (reinviteCalls.length === 0 && plainCalls.length === 0) {
             return (
               <div className="mt-3 rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                 No alerts.
                 <p className="mt-2 text-xs text-slate-400">
-                  Alerts appear here when a call is negotiated with plain RTP (no encryption) or
-                  when an active call's media endpoint is renegotiated mid-call. Mid-call
-                  renegotiation detection still needs to be added separately.
+                  Alerts appear here when (a) a call is negotiated with plain RTP, or (b) an
+                  active call gets a mid-call re-INVITE — the most-detectable signal of a
+                  third-party bridge, fork, or NAT roam.
                 </p>
               </div>
             );
           }
           return (
             <ul className="mt-3 space-y-2">
+              {reinviteCalls.slice(0, 10).map((r) => (
+                <li
+                  key={`ri-${r.id}`}
+                  className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900"
+                >
+                  🔴 Mid-call renegotiation ({r.reinvite_count}×) ·{" "}
+                  {r.last_reinvite_at && (
+                    <>{new Date(r.last_reinvite_at).toLocaleTimeString()} · </>
+                  )}
+                  <strong>{carrierName(r.carrier_id)}</strong> · call{" "}
+                  <code className="font-mono text-xs">{r.call_id.slice(0, 12)}…</code> · endpoint
+                  was <code className="font-mono">{r.media_endpoint_ip ?? "?"}</code>
+                  {r.last_reinvite_endpoint && r.last_reinvite_endpoint !== r.media_endpoint_ip && (
+                    <>
+                      {" "}
+                      → now <code className="font-mono">{r.last_reinvite_endpoint}</code>
+                    </>
+                  )}
+                  . Possible third-party bridge, fork, or NAT roam — investigate via HOMER SIP
+                  ladder.
+                </li>
+              ))}
               {plainCalls.slice(0, 10).map((r) => (
                 <li
-                  key={r.id}
+                  key={`pl-${r.id}`}
                   className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
                 >
                   🟠 {new Date(r.started_at).toLocaleTimeString()} ·{" "}
@@ -551,30 +675,31 @@ export default function Privacy() {
 
       {/* Section 5 — What this means */}
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">What this means</h3>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">What this page measures</h3>
         <ul className="mt-2 space-y-2 text-sm text-slate-600">
           <li>
-            <strong>"Can they hear"</strong> means the call's audio passes through that company's
-            server, so they are <em>able</em> to listen or record it. It does NOT mean they are
-            recording right now.
+            <strong>Audio via MediaNode</strong> is the only privacy guarantee this product
+            actually delivers against the carrier. When the call's media RTP is rewritten by our
+            rtpengine, the carrier sees a MediaNode pool IP and cannot trivially correlate the
+            audio with the dialer's real address. Should be 100%.
           </li>
           <li>
-            <strong>No external tool can see inside a carrier's network.</strong> This page shows
-            architectural <em>exposure</em>, never proof of actual recording.
+            <strong>Dialer IP leaked</strong> = the call's audio never made it through our
+            MediaNode — usually means rtpengine_offer didn't fire (config drift, NG socket
+            unreachable). The carrier sees the dialer's actual public IP in the SDP. This is the
+            most actionable privacy alarm on the page.
           </li>
           <li>
-            <strong>Encryption labels are real now</strong> — Kamailio captures SDP on every
-            INVITE and the panel parses out the <code>m=</code> transport and{" "}
-            <code>a=crypto:</code> suite. Note: <strong>SDES-SRTP</strong> (the common flavor in
-            SIP trunks) exchanges keys in cleartext signaling — a carrier in the signaling path
-            can still decrypt. Only <strong>DTLS-SRTP</strong> with verified fingerprints
-            actually blinds the carrier; the page marks those rows green.
+            <strong>Mid-call renegotiations</strong> count re-INVITEs that arrived after the
+            initial offer/answer was complete. The strongest passively-observable signal of a
+            third-party joining (conference bridge, eavesdrop tap), a carrier-side fork to a
+            recorder, or a NAT roam. Investigate per-call via the SIP ladder on CDRs.
           </li>
           <li>
-            <strong>"Private" calls (peer-to-peer media bypass)</strong> are zero on a conventional
-            wholesale SBC setup — by design. The wholesale carrier <em>is</em> the only path. To
-            get real private calls you'd need direct peer interconnects with media-bypass + ICE +
-            DTLS-SRTP.
+            <strong>What this cannot prove:</strong> server-side recording at the carrier (e.g.
+            sipREC mirror, lawful intercept) is invisible from outside their network. Encryption
+            doesn't help here either — wholesale SIP is plain RTP industry-wide; SRTP isn't
+            supported on the carrier interfaces we route through.
           </li>
         </ul>
       </section>

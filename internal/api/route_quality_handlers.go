@@ -35,8 +35,14 @@ type CarrierQuality struct {
 	AvgJitterMs  *float64         `json:"avg_jitter_ms,omitempty"`
 	AvgLossPct   *float64         `json:"avg_loss_pct,omitempty"`
 	RTPSamples   int64            `json:"rtp_samples"`
-	Grade        string           `json:"grade"` // A / B / C / D / F
+	Grade        string           `json:"grade"` // A / B / C / D / F (quality)
 	GradeReasons []string         `json:"grade_reasons"`
+	// Tier is a *route-class* inference (A=Tier-1 direct, B=Tier-2, C=grey)
+	// computed from observed patterns. Distinct from Grade — a Tier-1
+	// route can have a bad day (Grade C) and a grey route can look A
+	// statistically. Heuristic only — see TierReasons for the signals.
+	Tier        string   `json:"tier"`
+	TierReasons []string `json:"tier_reasons"`
 }
 
 // GET /api/v1/route-quality?window=24h
@@ -117,6 +123,7 @@ func (s *Server) routeQuality(c *gin.Context) {
 		q.TopCodecPct = topPct
 
 		q.Grade, q.GradeReasons = gradeCarrier(q)
+		q.Tier, q.TierReasons = inferTier(q)
 		out = append(out, q)
 	}
 	c.JSON(http.StatusOK, out)
@@ -278,4 +285,112 @@ func formatPct(v float64) string {
 		return strconv.Itoa(int(v)) + "%"
 	}
 	return strconv.FormatFloat(v, 'f', 1, 64) + "%"
+}
+
+// inferTier classifies the route as Tier-1 (A), Tier-2 (B), Tier-3/grey (C),
+// or Unknown ("—") based on observed call patterns. NOT proof — passive
+// observation can't see what's inside the carrier network. Signals:
+//
+//   - PDD bands (Tier-1 routes are <3s typical; >7s suggests multi-hop SIM)
+//   - Codec preservation (G.711 forwarded = direct; G.729 forced = squeezed)
+//   - MOS (clean Tier-1 routes consistently >4; grey routes <3.5)
+//   - ASR range (very-low ASR + very-low ACD = SIM-box; very-high ASR with
+//     short ACD = false-answer fraud)
+//   - Cause-code purity (mostly 200/486/487 = real PSTN; lots of 480/503/
+//     non-standard = problematic backhaul)
+//
+// Each signal contributes a "tier score" (start at 100, deduct for grey-
+// indicators). Final mapping: 75+ → A, 50–74 → B, <50 → C. Carriers with
+// <30 calls in the window stay "—".
+func inferTier(q CarrierQuality) (string, []string) {
+	if q.Total < 30 {
+		return "—", []string{"insufficient sample (need 30+ calls for tier inference)"}
+	}
+	score := 100
+	var reasons []string
+
+	// PDD bands
+	if q.AvgPDDMs != nil && q.PDDSamples >= 5 {
+		avg := *q.AvgPDDMs
+		switch {
+		case avg < 3000:
+			reasons = append(reasons, "PDD <3s (direct/Tier-1 pattern)")
+		case avg < 5000:
+			score -= 10
+			reasons = append(reasons, "PDD 3–5s (mid-tier)")
+		case avg < 7000:
+			score -= 25
+			reasons = append(reasons, "PDD 5–7s (multi-hop)")
+		default:
+			score -= 40
+			reasons = append(reasons, "PDD >7s (grey-route signal)")
+		}
+	}
+
+	// Codec preservation
+	if q.TopCodecPct > 0 && q.TopCodec != "" {
+		upper := strings.ToUpper(q.TopCodec)
+		switch {
+		case strings.HasPrefix(upper, "G729") && q.TopCodecPct >= 80:
+			score -= 25
+			reasons = append(reasons, "G.729 forced on "+formatPct(q.TopCodecPct)+" (bandwidth-squeezed backhaul)")
+		case strings.HasPrefix(upper, "PCMA") || strings.HasPrefix(upper, "PCMU"):
+			reasons = append(reasons, "G.711 preserved on "+formatPct(q.TopCodecPct)+" (direct route)")
+		}
+	}
+
+	// MOS
+	if q.AvgMOS != nil && q.RTPSamples >= 5 {
+		mos := *q.AvgMOS
+		switch {
+		case mos >= 4.0:
+			reasons = append(reasons, "MOS ≥4.0 (clean audio path)")
+		case mos < 3.5:
+			score -= 25
+			reasons = append(reasons, "MOS <3.5 (degraded audio — multi-transcode or congestion)")
+		}
+	}
+
+	// ASR anomalies
+	switch {
+	case q.ASRPct > 90 && q.ACDSeconds < 20:
+		score -= 30
+		reasons = append(reasons, "ASR >90% + ACD <20s (false-answer/SIM-box pattern)")
+	case q.ASRPct < 10 && q.Total >= 50:
+		score -= 15
+		reasons = append(reasons, "ASR <10% (poor completion — possible grey filter)")
+	case q.ASRPct >= 30 && q.ASRPct <= 60 && q.ACDSeconds > 30:
+		reasons = append(reasons, "ASR/ACD in normal Tier-1 range")
+	}
+
+	// Cause-code purity
+	if q.Total > 0 {
+		pother := float64(q.CauseMix["other"]) / float64(q.Total) * 100
+		p503 := float64(q.CauseMix["503"]) / float64(q.Total) * 100
+		if pother > 15 {
+			score -= 10
+			reasons = append(reasons, "non-standard cause codes >15% (carrier inconsistency)")
+		}
+		if p503 > 10 {
+			score -= 10
+			reasons = append(reasons, "503 rate >10% (capacity / grey signaling)")
+		}
+	}
+
+	if score < 0 {
+		score = 0
+	}
+	var tier string
+	switch {
+	case score >= 75:
+		tier = "A" // Tier-1 / direct
+	case score >= 50:
+		tier = "B" // Tier-2 / mid
+	default:
+		tier = "C" // Tier-3 / grey
+	}
+	if len(reasons) == 0 {
+		reasons = []string{"no strong signal either way"}
+	}
+	return tier, reasons
 }

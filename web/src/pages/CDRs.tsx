@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type CDR, type CDRStats, type Carrier, type Client } from "../api";
 import { RefreshIcon, DownloadIcon } from "../components/Icons";
+import SipTraceModal from "../components/SipTraceModal";
+import ResetDataModal from "../components/ResetDataModal";
 
 function fmtDur(sec: number | null | undefined): string {
   if (sec == null) return "—";
@@ -35,6 +37,8 @@ export default function CDRs() {
     to: "",
     dnis: "",
   });
+  const [traceFor, setTraceFor] = useState<{ call_id: string; started_at?: string | null } | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
 
   function filterParts(): string[] {
     const parts: string[] = [];
@@ -102,6 +106,13 @@ export default function CDRs() {
         <div className="flex gap-2">
           <button onClick={reload} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50">
             <RefreshIcon /> Refresh
+          </button>
+          <button
+            onClick={() => setResetOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:bg-rose-50"
+            title="Wipe operational data (active calls, CDRs, metrics). Config not affected."
+          >
+            Clear data
           </button>
           <button onClick={exportCSV} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50">
             <DownloadIcon /> Export CSV
@@ -172,21 +183,39 @@ export default function CDRs() {
                 <td className="px-3 py-1.5">{dispoBadge(r.disposition)}</td>
                 <td className="px-3 py-1.5 font-mono text-xs">{r.sip_code ?? "—"}</td>
                 <td className="px-3 py-1.5 text-right">
-                  <a
-                    href={`/homer/#/search/result/${encodeURIComponent(r.call_id)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="Open SIP ladder for this call in HOMER"
+                  <button
+                    onClick={() =>
+                      setTraceFor({
+                        call_id: r.call_id,
+                        started_at: r.started_at ?? null,
+                      })
+                    }
+                    title="Open SIP ladder for this call"
                     className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
                   >
                     SIP
-                  </a>
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {traceFor && (
+        <SipTraceModal
+          callID={traceFor.call_id}
+          startedAt={traceFor.started_at}
+          onClose={() => setTraceFor(null)}
+        />
+      )}
+      {resetOpen && (
+        <ResetDataModal
+          onClose={() => {
+            setResetOpen(false);
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }
