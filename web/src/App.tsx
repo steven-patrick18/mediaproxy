@@ -12,6 +12,7 @@ import Carriers from "./pages/Carriers";
 import RoutesPage from "./pages/Routes";
 import Assignments from "./pages/Assignments";
 import LiveCalls from "./pages/LiveCalls";
+import Privacy from "./pages/Privacy";
 import CDRs from "./pages/CDRs";
 import Reports from "./pages/Reports";
 import AuditLog from "./pages/AuditLog";
@@ -40,6 +41,7 @@ export default function App() {
       >
         <Route index element={<Dashboard />} />
         <Route path="calls" element={<LiveCalls />} />
+        <Route path="privacy" element={<Privacy />} />
         <Route path="cdrs" element={<CDRs />} />
         <Route path="reports" element={<Reports />} />
 

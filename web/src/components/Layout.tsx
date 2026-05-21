@@ -12,6 +12,7 @@ const nav: NavSection[] = [
     label: "Calls",
     items: [
       { to: "/calls", label: "Live calls" },
+      { to: "/privacy", label: "Privacy monitor" },
       { to: "/cdrs", label: "CDRs" },
       { to: "/reports", label: "Reports" },
     ],
