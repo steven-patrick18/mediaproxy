@@ -99,5 +99,15 @@ func (s *Server) provisionNode(c *gin.Context) {
 		ControlPlaneURL:      controlPlaneURL,
 		BinaryURL:            binaryURL,
 	})
+	// On success, persist whichever auth method worked so the next
+	// Provision modal defaults to it.
+	if result.OK {
+		method := "password"
+		if req.SSHKey != "" {
+			method = "key"
+		}
+		_, _ = s.deps.PG.Exec(c.Request.Context(),
+			`UPDATE media_nodes SET ssh_auth_method = $1 WHERE id = $2`, method, id)
+	}
 	c.JSON(http.StatusOK, provisionResponse{OK: result.OK, Log: result.Log})
 }

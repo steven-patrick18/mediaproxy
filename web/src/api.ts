@@ -159,6 +159,7 @@ export interface MediaNode {
   ips_bound: number;
   ips_total: number;
   firewall_applied_at?: string | null;
+  ssh_auth_method?: "password" | "key";
 }
 export interface MetricPoint {
   ts: string;

@@ -39,6 +39,7 @@ type MediaNode struct {
 	IPsBound       int      `json:"ips_bound"`
 	IPsTotal       int      `json:"ips_total"`
 	FirewallAppliedAt *time.Time `json:"firewall_applied_at,omitempty"`
+	SSHAuthMethod  string   `json:"ssh_auth_method"`
 }
 
 // computedStatus flips a node to "offline" if last_seen_at is older than
@@ -63,7 +64,7 @@ func (s *Server) listNodes(c *gin.Context) {
 		       COALESCE(n.ips_bound, 0),
 		       (SELECT count(*) FROM node_ips      WHERE node_id = n.id) +
 		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total,
-		       n.firewall_applied_at
+		       n.firewall_applied_at, n.ssh_auth_method
 		  FROM media_nodes n
 		 ORDER BY n.id
 	`
@@ -79,7 +80,8 @@ func (s *Server) listNodes(c *gin.Context) {
 		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.HostIP, &n.Region, &n.NicGbps,
 			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
 			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
-			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal, &n.FirewallAppliedAt); err != nil {
+			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal, &n.FirewallAppliedAt,
+			&n.SSHAuthMethod); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -96,6 +98,7 @@ type createNodeRequest struct {
 	NicGbps            int    `json:"nic_gbps" binding:"gte=0"`
 	MaxCalls           int    `json:"max_calls" binding:"gte=0"`
 	TranscodingEnabled bool   `json:"transcoding_enabled"`
+	SSHAuthMethod      string `json:"ssh_auth_method" binding:"omitempty,oneof=password key"`
 }
 
 func (s *Server) createNode(c *gin.Context) {
@@ -118,15 +121,19 @@ func (s *Server) createNode(c *gin.Context) {
 	if req.NicGbps > 0 {
 		nicGbps = &req.NicGbps
 	}
+	authMethod := req.SSHAuthMethod
+	if authMethod == "" {
+		authMethod = "password"
+	}
 	err = s.deps.PG.QueryRow(c.Request.Context(), `
-		INSERT INTO media_nodes (name, role, host_ip, region, nic_gbps, max_calls, transcoding_enabled, agent_token, status)
-		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, 'offline')
+		INSERT INTO media_nodes (name, role, host_ip, region, nic_gbps, max_calls, transcoding_enabled, agent_token, status, ssh_auth_method)
+		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, 'offline', $9)
 		RETURNING id, name, role, host(host_ip), region, nic_gbps, max_calls, transcoding_enabled,
-		          status, agent_token, last_seen_at, created_at
-	`, req.Name, req.Role, req.HostIP, region, nicGbps, req.MaxCalls, req.TranscodingEnabled, token).Scan(
+		          status, agent_token, last_seen_at, created_at, ssh_auth_method
+	`, req.Name, req.Role, req.HostIP, region, nicGbps, req.MaxCalls, req.TranscodingEnabled, token, authMethod).Scan(
 		&node.ID, &node.Name, &node.Role, &node.HostIP, &node.Region, &node.NicGbps,
 		&node.MaxCalls, &node.TranscodingEnabled, &node.Status, &node.AgentToken,
-		&node.LastSeenAt, &node.CreatedAt,
+		&node.LastSeenAt, &node.CreatedAt, &node.SSHAuthMethod,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -145,6 +152,7 @@ type patchNodeRequest struct {
 	NicGbps            *int    `json:"nic_gbps"`
 	MaxCalls           *int    `json:"max_calls"`
 	TranscodingEnabled *bool   `json:"transcoding_enabled"`
+	SSHAuthMethod      *string `json:"ssh_auth_method"`
 }
 
 func (s *Server) patchNode(c *gin.Context) {
@@ -158,15 +166,24 @@ func (s *Server) patchNode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.SSHAuthMethod != nil {
+		switch *req.SSHAuthMethod {
+		case "password", "key":
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ssh_auth_method must be 'password' or 'key'"})
+			return
+		}
+	}
 	tag, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE media_nodes
 		   SET name                = COALESCE($2, name),
 		       region              = COALESCE($3, region),
 		       nic_gbps            = COALESCE($4, nic_gbps),
 		       max_calls           = COALESCE($5, max_calls),
-		       transcoding_enabled = COALESCE($6, transcoding_enabled)
+		       transcoding_enabled = COALESCE($6, transcoding_enabled),
+		       ssh_auth_method     = COALESCE($7, ssh_auth_method)
 		 WHERE id = $1
-	`, id, req.Name, req.Region, req.NicGbps, req.MaxCalls, req.TranscodingEnabled)
+	`, id, req.Name, req.Region, req.NicGbps, req.MaxCalls, req.TranscodingEnabled, req.SSHAuthMethod)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

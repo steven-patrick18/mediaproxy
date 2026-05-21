@@ -191,9 +191,12 @@ export default function Nodes() {
     region: "",
     nic_gbps: 1,
     max_calls: 2500,
+    ssh_auth_method: "password" as "password" | "key",
     ssh_user: "root",
     ssh_port: 22,
     ssh_password: "",
+    ssh_key: "",
+    ssh_key_passphrase: "",
   });
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<MediaNode | null>(null);
@@ -257,24 +260,32 @@ export default function Nodes() {
         region: form.region,
         nic_gbps: form.nic_gbps,
         max_calls: form.max_calls,
+        ssh_auth_method: form.ssh_auth_method,
       });
       setCreated(node);
 
-      // 2) If a password was given, install the agent right now.
-      if (form.ssh_password) {
+      // 2) If credentials were given, install the agent right now.
+      const hasCreds = form.ssh_auth_method === "password" ? !!form.ssh_password : !!form.ssh_key;
+      if (hasCreds) {
         setCreateLog("Connecting to " + form.host_ip + " over SSH...\n");
-        const res = await api.post<ProvisionResult>(`/api/v1/nodes/${node.id}/provision`, {
+        const body: Record<string, unknown> = {
           ssh_host: form.host_ip,
           ssh_port: form.ssh_port,
           ssh_user: form.ssh_user,
-          ssh_password: form.ssh_password,
-        });
+        };
+        if (form.ssh_auth_method === "password") {
+          body.ssh_password = form.ssh_password;
+        } else {
+          body.ssh_key = form.ssh_key;
+          if (form.ssh_key_passphrase) body.ssh_key_passphrase = form.ssh_key_passphrase;
+        }
+        const res = await api.post<ProvisionResult>(`/api/v1/nodes/${node.id}/provision`, body);
         setCreateLog(res.log);
         if (!res.ok) {
           setErr("Node created but provisioning failed — fix the issue and click 'Provision via SSH' on the card to retry.");
         }
       } else {
-        // No password supplied — close the modal as before.
+        // No credentials supplied — just close the modal.
         setCreating(false);
       }
 
@@ -285,9 +296,12 @@ export default function Nodes() {
         region: "",
         nic_gbps: 1,
         max_calls: 2500,
+        ssh_auth_method: "password",
         ssh_user: "root",
         ssh_port: 22,
         ssh_password: "",
+        ssh_key: "",
+        ssh_key_passphrase: "",
       });
       reload();
     } catch (e) {
@@ -302,7 +316,7 @@ export default function Nodes() {
       ssh_host: n.host_ip,
       ssh_port: 22,
       ssh_user: "root",
-      auth_method: "password",
+      auth_method: n.ssh_auth_method === "key" ? "key" : "password",
       ssh_password: "",
       ssh_key: "",
       ssh_key_passphrase: "",
@@ -546,13 +560,13 @@ export default function Nodes() {
             <div className="rounded border border-slate-200 bg-slate-50 p-3">
               <div className="mb-2 flex items-baseline justify-between">
                 <h4 className="text-sm font-medium text-slate-700">SSH auto-install</h4>
-                <span className="text-xs text-slate-500">leave password blank to skip</span>
+                <span className="text-xs text-slate-500">leave credentials blank to skip</span>
               </div>
               <p className="mb-3 text-xs text-slate-500">
-                If you fill the password, the panel will SSH into the host as the user below, download
-                the agent binary, write its config + systemd unit, and start it. The password is used
-                once and never stored.
+                Provide either a password or a private key. The auth method you pick here is
+                also saved on the node so future re-provisions default to it.
               </p>
+
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-500">SSH user</label>
@@ -563,10 +577,55 @@ export default function Nodes() {
                   <input type="number" value={form.ssh_port} onChange={(e) => setForm({ ...form, ssh_port: Number(e.target.value) })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500">SSH password</label>
-                  <input type="password" autoComplete="new-password" value={form.ssh_password} onChange={(e) => setForm({ ...form, ssh_password: e.target.value })} placeholder="(optional)" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+                  <label className="block text-xs font-medium text-slate-500">Auth method</label>
+                  <select value={form.ssh_auth_method} onChange={(e) => setForm({ ...form, ssh_auth_method: e.target.value as "password" | "key" })} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm">
+                    <option value="password">password</option>
+                    <option value="key">ssh key</option>
+                  </select>
                 </div>
               </div>
+
+              {form.ssh_auth_method === "password" ? (
+                <div className="mt-3">
+                  <label className="block text-xs font-medium text-slate-500">SSH password</label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={form.ssh_password}
+                    onChange={(e) => setForm({ ...form, ssh_password: e.target.value })}
+                    placeholder="(optional — leave blank to create the node row only)"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500">
+                      SSH private key (PEM / OpenSSH)
+                    </label>
+                    <textarea
+                      rows={6}
+                      value={form.ssh_key}
+                      onChange={(e) => setForm({ ...form, ssh_key: e.target.value })}
+                      placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500">
+                      Key passphrase (if encrypted)
+                    </label>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={form.ssh_key_passphrase}
+                      onChange={(e) => setForm({ ...form, ssh_key_passphrase: e.target.value })}
+                      placeholder="(blank if not encrypted)"
+                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </form>
         ) : (
