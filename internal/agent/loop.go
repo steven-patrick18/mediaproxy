@@ -209,18 +209,21 @@ func persistAndServices(cfg *Config, expected []string) {
 		// every reload-or-restart is a full restart — without this guard
 		// the agent would cycle the daemon every heartbeat (~10s) in
 		// steady state and miss every other Asterisk qualify.
-		body := GenRTPEngineConfig(expected)
+		body := GenRTPEngineConfig(expected, cfg.RTPEngineNGListen)
 		changed, err := WriteRTPEngineConfig(cfg.RTPEngineConfPath, body)
 		if err != nil {
 			slog.Error("rtpengine write", "err", err)
 		} else if changed {
 			slog.Info("rtpengine config changed, restarting", "ips", len(expected))
-			if err := systemctlAction("rtpengine", "reload-or-restart"); err != nil {
+			// Ubuntu's stock rtpengine package ships the daemon as
+			// "rtpengine-daemon.service"; we still keep "rtpengine"
+			// as an alias check in case future packagers rename it.
+			if err := systemctlAction("rtpengine-daemon", "reload-or-restart"); err != nil {
 				slog.Warn("rtpengine reload", "err", err)
 			}
 		}
 	case "sip_proxy":
-		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID)
+		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID, cfg.RTPEngineSock)
 		changed, err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg)
 		if err != nil {
 			slog.Error("kamailio write", "err", err)
@@ -270,7 +273,7 @@ func (a *Agent) runCommand(ctx context.Context, cmd Command) {
 			detail = msg
 		}
 	case "restart_rtpengine":
-		if err := systemctlAction("rtpengine", "restart"); err != nil {
+		if err := systemctlAction("rtpengine-daemon", "restart"); err != nil {
 			status, detail = "error", err.Error()
 		}
 	case "restart_kamailio":

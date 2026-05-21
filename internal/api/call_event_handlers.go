@@ -183,18 +183,28 @@ func (s *Server) callQuality(c *gin.Context) {
 	// Update each entry individually; a single bad row shouldn't reject the
 	// rest. We could batch with VALUES + JOIN, but per-call this stays
 	// readable and an agent typically reports <50 active calls per tick.
+	// NB: we used to filter `WHERE call_id = $1 AND node_id = $2`. That
+	// silently no-op'd because /call-start INSERTs node_id = SipProxy's id
+	// (Kamailio runs there) while /call-quality is posted by the media
+	// agent (node_id = MediaNode). Match by call_id only — there's a
+	// unique constraint on call_id so we can't update a wrong row.
+	// Also bump last_seen_at so the LiveCalls UI keeps showing the call
+	// past the 2-minute freshness filter; otherwise rows that never get
+	// a SIP event after INSERT silently disappear from the live view.
+	_ = nodeID
 	updated := 0
 	for _, e := range req.Entries {
 		tag, err := s.deps.PG.Exec(c.Request.Context(), `
 			UPDATE active_calls
-			   SET avg_jitter_ms       = $3,
-			       avg_packet_loss_pct = $4,
-			       mos_score           = NULLIF($5, 0)
-			 WHERE call_id = $1 AND node_id = $2
-		`, e.CallID, nodeID, e.JitterMs, e.PacketLossPct, e.MOSScore)
+			   SET avg_jitter_ms       = $2,
+			       avg_packet_loss_pct = $3,
+			       mos_score           = NULLIF($4, 0),
+			       last_seen_at        = now()
+			 WHERE call_id = $1
+		`, e.CallID, e.JitterMs, e.PacketLossPct, e.MOSScore)
 		if err != nil {
 			slog.Error("call-quality: update failed",
-				"err", err, "call_id", e.CallID, "node_id", nodeID)
+				"err", err, "call_id", e.CallID)
 			continue
 		}
 		if tag.RowsAffected() > 0 {
@@ -204,6 +214,53 @@ func (s *Server) callQuality(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"received": len(req.Entries), "updated": updated})
 }
 
+// POST /api/v1/agent/call-reinvite
+// Body: { "call_id": "...", "sdp_b64": "<base64 of new SDP>" }
+//
+// Kamailio fires this when an in-dialog INVITE arrives (loose_route() true
+// AND method == INVITE). The new SDP's media endpoint may differ from the
+// initial offer — that delta is the privacy-relevant signal (third-party
+// bridge, fork, NAT roam). We increment reinvite_count and stamp the new
+// endpoint for the Privacy page to show as an alert.
+type callReinviteReq struct {
+	CallID string `json:"call_id" binding:"required"`
+	SDPB64 string `json:"sdp_b64"`
+}
+
+func (s *Server) callReinvite(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
+	var req callReinviteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Parse the new SDP to extract the endpoint IP (if any). Empty body
+	// re-INVITEs (session refresh) won't have an endpoint — that's fine.
+	var endpoint *string
+	if req.SDPB64 != "" {
+		if raw, err := base64.StdEncoding.DecodeString(req.SDPB64); err == nil {
+			if fields := parseSDP(string(raw)); fields.EndpointIP != "" {
+				ep := fields.EndpointIP
+				endpoint = &ep
+			}
+		}
+	}
+	_ = nodeID
+	if _, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE active_calls
+		   SET reinvite_count         = reinvite_count + 1,
+		       last_reinvite_at       = now(),
+		       last_reinvite_endpoint = COALESCE($2::inet, last_reinvite_endpoint),
+		       last_seen_at           = now()
+		 WHERE call_id = $1
+	`, req.CallID, endpoint); err != nil {
+		slog.Error("call-reinvite: update failed", "err", err, "call_id", req.CallID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (s *Server) callProgress(c *gin.Context) {
 	nodeID := c.GetInt64("agent_node_id")
 	var req callProgressReq
@@ -211,13 +268,20 @@ func (s *Server) callProgress(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	_ = nodeID
+	// pdd_ms only sets on first 18x (NULL guard); last_seen_at always
+	// bumps so a long ringing call doesn't fall out of the LiveCalls
+	// 2-minute freshness window. Dropped node_id filter — handlers in
+	// /call-* shouldn't reject media-node-posted events; row uniqueness
+	// is enforced by call_id alone.
 	if _, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE active_calls
-		   SET pdd_ms = $3
-		 WHERE call_id = $1 AND node_id = $2 AND pdd_ms IS NULL
-	`, req.CallID, nodeID, req.PDDMs); err != nil {
-		slog.Error("call-progress: update pdd_ms failed",
-			"err", err, "call_id", req.CallID, "node_id", nodeID)
+		   SET pdd_ms       = COALESCE(pdd_ms, $2),
+		       last_seen_at = now()
+		 WHERE call_id = $1
+	`, req.CallID, req.PDDMs); err != nil {
+		slog.Error("call-progress: update failed",
+			"err", err, "call_id", req.CallID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -308,13 +372,16 @@ func (s *Server) callEnd(c *gin.Context) {
 		}
 	}
 
-	// Pull the active row, write CDR, delete.
+	// Pull the active row, write CDR, delete. inet columns are pulled as
+	// host() text so pgx Scan into *string works — scanning raw inet into
+	// *string returned NotFound silently and CDRs never landed.
 	row := s.deps.PG.QueryRow(c.Request.Context(), `
 		DELETE FROM active_calls WHERE call_id = $1 AND node_id = $2
-		 RETURNING client_id, carrier_id, media_ip, signaling_from, ani, dnis, started_at,
+		 RETURNING client_id, carrier_id, host(media_ip), host(signaling_from), ani, dnis, started_at,
 		           media_transport, host(media_endpoint_ip), crypto_suite,
 		           pdd_ms, codecs_offered,
-		           avg_jitter_ms, avg_packet_loss_pct, mos_score
+		           avg_jitter_ms, avg_packet_loss_pct, mos_score,
+		           reinvite_count, last_reinvite_at
 	`, req.CallID, nodeID)
 	var (
 		clientID, carrierID                   *int64
@@ -325,10 +392,16 @@ func (s *Server) callEnd(c *gin.Context) {
 		pddMs                                 *int
 		codecsOffered                         *string
 		avgJitterMs, avgLossPct, mosScore     *float64
+		reinviteCount                         int
+		lastReinviteAt                        *time.Time
 	)
 	if err := row.Scan(&clientID, &carrierID, &mediaIP, &sigFrom, &ani, &dnis, &startedAt,
 		&mediaTransport, &mediaEndpoint, &crypto, &pddMs, &codecsOffered,
-		&avgJitterMs, &avgLossPct, &mosScore); err != nil {
+		&avgJitterMs, &avgLossPct, &mosScore,
+		&reinviteCount, &lastReinviteAt); err != nil {
+		// Log the real cause — was it ErrNoRows or a Scan/type error?
+		slog.Warn("call-end: scan failed",
+			"err", err, "call_id", req.CallID, "node_id", nodeID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "active call not found"})
 		return
 	}
@@ -348,16 +421,19 @@ func (s *Server) callEnd(c *gin.Context) {
 		     ani, dnis, started_at, ended_at, duration_sec, disposition, sip_code,
 		     media_transport, media_endpoint_ip, crypto_suite,
 		     pdd_ms, codecs_offered,
-		     avg_jitter_ms, avg_packet_loss_pct, mos_score)
+		     avg_jitter_ms, avg_packet_loss_pct, mos_score,
+		     reinvite_count, last_reinvite_at)
 		VALUES ($1, $2, $3, $4, $5::inet, $6::inet, $7, $8, $9, now(), $10, $11, $12,
 		        $13, NULLIF($14,'')::inet, $15,
 		        $16, $17,
-		        $18, $19, $20)
+		        $18, $19, $20,
+		        $21, $22)
 	`, req.CallID, clientID, carrierID, nodeID, mediaIP, sigFrom, ani, dnis,
 		startedAt, dur, dispo, sipCode,
 		mediaTransport, derefStr(mediaEndpoint), crypto,
 		pddMs, codecsOffered,
-		avgJitterMs, avgLossPct, mosScore)
+		avgJitterMs, avgLossPct, mosScore,
+		reinviteCount, lastReinviteAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

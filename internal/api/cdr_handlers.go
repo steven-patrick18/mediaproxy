@@ -134,21 +134,24 @@ func (s *Server) cdrStats(c *gin.Context) {
 
 // ActiveCall is the live-call view; rows older than 2 minutes are filtered out.
 type ActiveCall struct {
-	ID              int64     `json:"id"`
-	CallID          string    `json:"call_id"`
-	ClientID        *int64    `json:"client_id,omitempty"`
-	CarrierID       *int64    `json:"carrier_id,omitempty"`
-	NodeID          *int64    `json:"node_id,omitempty"`
-	MediaIP         *string   `json:"media_ip,omitempty"`
-	SignalingFrom   *string   `json:"signaling_from,omitempty"`
-	ANI             *string   `json:"ani,omitempty"`
-	DNIS            *string   `json:"dnis,omitempty"`
-	StartedAt       time.Time `json:"started_at"`
-	LastSeenAt      time.Time `json:"last_seen_at"`
-	DurationSec     int       `json:"duration_sec"`
-	MediaTransport  *string   `json:"media_transport,omitempty"`
-	MediaEndpointIP *string   `json:"media_endpoint_ip,omitempty"`
-	CryptoSuite     *string   `json:"crypto_suite,omitempty"`
+	ID                   int64      `json:"id"`
+	CallID               string     `json:"call_id"`
+	ClientID             *int64     `json:"client_id,omitempty"`
+	CarrierID            *int64     `json:"carrier_id,omitempty"`
+	NodeID               *int64     `json:"node_id,omitempty"`
+	MediaIP              *string    `json:"media_ip,omitempty"`
+	SignalingFrom        *string    `json:"signaling_from,omitempty"`
+	ANI                  *string    `json:"ani,omitempty"`
+	DNIS                 *string    `json:"dnis,omitempty"`
+	StartedAt            time.Time  `json:"started_at"`
+	LastSeenAt           time.Time  `json:"last_seen_at"`
+	DurationSec          int        `json:"duration_sec"`
+	MediaTransport       *string    `json:"media_transport,omitempty"`
+	MediaEndpointIP      *string    `json:"media_endpoint_ip,omitempty"`
+	CryptoSuite          *string    `json:"crypto_suite,omitempty"`
+	ReinviteCount        int        `json:"reinvite_count"`
+	LastReinviteAt       *time.Time `json:"last_reinvite_at,omitempty"`
+	LastReinviteEndpoint *string    `json:"last_reinvite_endpoint,omitempty"`
 }
 
 // GET /api/v1/calls/active?node_id=
@@ -162,7 +165,8 @@ func (s *Server) listActiveCalls(c *gin.Context) {
 	             host(media_ip), host(signaling_from), ani, dnis,
 	             started_at, last_seen_at,
 	             EXTRACT(EPOCH FROM (now() - started_at))::int AS dur,
-	             media_transport, host(media_endpoint_ip), crypto_suite
+	             media_transport, host(media_endpoint_ip), crypto_suite,
+	             reinvite_count, last_reinvite_at, host(last_reinvite_endpoint)
 	        FROM active_calls ` + w.sql() + ` ORDER BY started_at DESC LIMIT 500`
 	rows, err := s.deps.PG.Query(c.Request.Context(), q, w.args...)
 	if err != nil {
@@ -176,7 +180,8 @@ func (s *Server) listActiveCalls(c *gin.Context) {
 		if err := rows.Scan(&a.ID, &a.CallID, &a.ClientID, &a.CarrierID, &a.NodeID,
 			&a.MediaIP, &a.SignalingFrom, &a.ANI, &a.DNIS,
 			&a.StartedAt, &a.LastSeenAt, &a.DurationSec,
-			&a.MediaTransport, &a.MediaEndpointIP, &a.CryptoSuite); err != nil {
+			&a.MediaTransport, &a.MediaEndpointIP, &a.CryptoSuite,
+			&a.ReinviteCount, &a.LastReinviteAt, &a.LastReinviteEndpoint); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

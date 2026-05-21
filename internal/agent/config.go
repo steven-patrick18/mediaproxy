@@ -23,6 +23,24 @@ type Config struct {
 	KamailioListenPath  string        `yaml:"kamailio_listen_path"`
 	HTTPTimeout         time.Duration `yaml:"http_timeout"`
 
+	// RTPEngineNGListen: address rtpengine binds its NG control socket on.
+	// On a media node where rtpengine is local-only, leave at default
+	// "127.0.0.1:2223". On a media node that a remote SipProxy will talk
+	// to, set to a reachable address (e.g. "0.0.0.0:2223" + UFW restriction,
+	// or the node's management IP). Empty = default 127.0.0.1:2223.
+	RTPEngineNGListen string `yaml:"rtpengine_ng_listen"`
+
+	// RTPEngineSock: where Kamailio (on sip_proxy role) should send NG
+	// commands. Format: "udp:host:port". Default "udp:127.0.0.1:2223"
+	// (rtpengine running locally on the SipProxy). For split-host
+	// topology where rtpengine lives on a separate MediaNode, set to
+	// "udp:<media-node-ip>:2223" — and ensure the MediaNode's NG listen
+	// + firewall allow it. When the value is the localhost default,
+	// the template ALSO suppresses rtpengine_manage() calls (no point
+	// calling a daemon that isn't there). Set to a non-localhost value
+	// to enable rtpengine media handling in Kamailio.
+	RTPEngineSock string `yaml:"rtpengine_sock"`
+
 	// ReadOnly: if true, the agent only reports metrics + bound IPs and
 	// never calls `ip addr add/del`, `netplan apply`, or touches
 	// rtpengine/kamailio configs. Useful for running unprivileged
@@ -81,6 +99,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.HTTPTimeout == 0 {
 		c.HTTPTimeout = 10 * time.Second
+	}
+	if c.RTPEngineNGListen == "" {
+		c.RTPEngineNGListen = "127.0.0.1:2223"
+	}
+	if c.RTPEngineSock == "" {
+		c.RTPEngineSock = "udp:127.0.0.1:2223"
 	}
 	// Zero in the file means "use default". Explicitly disabling is done
 	// by setting auto_claim_max_prefix: -1 in YAML.

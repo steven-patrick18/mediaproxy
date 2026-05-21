@@ -24,7 +24,7 @@ import (
 // listenIPs is the set of signaling IPs bound on this node (already deduped).
 // nodeID is used as the HEP capture-id so HOMER can attribute messages to
 // the right proxy when multiple SipProxy nodes are in play.
-func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64) (listenCfg string, mainCfg string) {
+func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64, rtpengineSock string) (listenCfg string, mainCfg string) {
 	uniq := make([]string, 0, len(listenIPs))
 	seen := map[string]struct{}{}
 	for _, ip := range listenIPs {
@@ -54,10 +54,63 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 		hepHost = u.Hostname()
 	}
 
+	// rtpengine wiring. If sock points anywhere but our localhost stub,
+	// we assume rtpengine is reachable and turn the rtpengine_manage()
+	// calls back on (request route + reply route). When sock is the
+	// default "udp:127.0.0.1:2223" — i.e. no remote MediaNode wired up
+	// — leave the calls commented out so kamailio doesn't spam
+	// "no available proxies" ERROR every reply.
+	if rtpengineSock == "" {
+		rtpengineSock = "udp:127.0.0.1:2223"
+	}
+	rtpengineEnabled := rtpengineSock != "udp:127.0.0.1:2223" && rtpengineSock != "udp:127.0.0.1:2222"
+	// rtpengine_manage() auto-detects offer vs answer from script context,
+	// but the detection is broken inside an http_async_client suspended
+	// callback (route[ROUTE_REPLY]) — it picks 'delete' instead of 'offer'
+	// for the INVITE side, leaving the outbound SDP unrewritten. Carrier
+	// then sees the dialer's IP/port and audio bypasses MediaNode entirely.
+	// Fix: call rtpengine_offer() / rtpengine_answer() explicitly so no
+	// detection is involved.
+	//
+	// Interface selection: the modern kamailio rtpengine module uses
+	// `direction=any;<NAME>` in the flags string. This sets the rtpengine
+	// NG `direction` list to ["any", "<NAME>"] — first element is the
+	// inbound iface (we don't care, "any"), second is the outbound
+	// iface NAME we want. With named interfaces in rtpengine.conf
+	// (NAME/IP form), <NAME> matches the iface and rtpengine binds the
+	// outbound RTP socket on that IP. The older `out-iface=` key is
+	// silently ignored by rtpengine 11+ ("Unknown dictionary key"
+	// warning in syslog) — that's why every call egressed on the
+	// first listed interface.
+	manageReq := `# rtpengine_offer("replace-origin replace-session-connection direction=any direction=" + $var(m_ip));`
+	manageRpl := `# if (status =~ "(180|183|200)") {
+    #     rtpengine_answer();
+    # }`
+	if rtpengineEnabled {
+		// Two `direction=` tokens in the flags string — kamailio's
+		// rtpengine module accumulates them into the NG `direction`
+		// bencode list. The first goes to position 0 (incoming /
+		// internal), the second to position 1 (outgoing / external).
+		// rtpengine then binds the outbound RTP socket on whichever
+		// named interface matches the second entry.
+		manageReq = `rtpengine_offer("replace-origin replace-session-connection direction=any direction=" + $var(m_ip));`
+		manageRpl = `if (status =~ "(180|183|200)") {
+        rtpengine_answer();
+    }`
+	}
+
 	mainCfg = strings.ReplaceAll(kamailioMainTmpl, "{{CONTROL_PLANE_URL}}", controlPlaneURL)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
+	deleteOnBye := "# rtpengine_delete();  // disabled — sock is localhost stub"
+	if rtpengineEnabled {
+		deleteOnBye = "rtpengine_delete();"
+	}
+	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_SOCK}}", rtpengineSock)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REQUEST}}", manageReq)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REPLY}}", manageRpl)
+	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_DELETE_ON_BYE}}", deleteOnBye)
 	return
 }
 
@@ -142,19 +195,27 @@ modparam("pike", "sampling_time_unit", 2)
 modparam("pike", "reqs_density_per_unit", 60)
 modparam("pike", "remove_latency", 4)
 
-####### htable: scanner blocklist + PDD timing #######
+####### htable: scanner blocklist + PDD timing + per-call snapshot #######
 modparam("htable", "htable", "blocked=>size=12;autoexpire=86400")
 # pdd: per-call INVITE timestamp in ms. autoexpire=120 = drop stale entries
 # after 2 minutes (way longer than any plausible PDD; 18x always arrives in
 # under 30s on every real route, including bad ones).
 modparam("htable", "htable", "pdd=>size=10;autoexpire=120")
+# call: snapshot of original INVITE fields ($rU/$fU/$si) keyed by Call-ID.
+# Why: the http_async_client callback for /route runs in a separate worker
+# and reads pseudo-vars against a degraded SIP message context — $rU
+# evaluates to the placeholder "you" instead of the dialed number, which
+# silently corrupts every relayed INVITE. Stashing into htable before the
+# async call and reading back inside the callback bypasses the bug.
+# autoexpire=300 = 5 min (longer than any plausible setup+ringing time).
+modparam("htable", "htable", "call=>size=12;autoexpire=300")
 
 ####### http_async_client: control-plane #######
 modparam("http_async_client", "tls_verify_host", 0)
 modparam("http_async_client", "tls_verify_peer", 0)
 
 ####### rtpengine #######
-modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
+modparam("rtpengine", "rtpengine_sock", "{{RTPENGINE_SOCK}}")
 
 ####### siptrace → HOMER (HEP3) #######
 # Mirror every SIP message routed through this proxy to heplify-server on
@@ -206,9 +267,58 @@ request_route {
         exit;
     }
 
-    # In-dialog routing
+    # Fire /call-end for ANY BYE or CANCEL — must run BEFORE loose_route()
+    # because Asterisk/Vicidial sometimes sends BYEs without Route headers
+    # (loose_route() returns false → previously fell through to 405 with
+    # no /call-end notification → active_calls grew unbounded). Doing this
+    # up-front means every BYE/CANCEL closes the call regardless of dialog
+    # routing state.
+    if (is_method("BYE")) {
+        setflag(1);
+        $var(end_body) = "{\"call_id\":\"" + $ci + "\",\"sip_code\":200}";
+        $http_req(method) = "POST";
+        $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+        $http_req(hdr) = "Content-Type: application/json";
+        $http_req(body) = $var(end_body);
+        $http_req(suspend) = 0;
+        http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", "CALL_END_REPLY");
+        {{RTPENGINE_DELETE_ON_BYE}}
+    }
+    if (is_method("CANCEL")) {
+        $var(end_body) = "{\"call_id\":\"" + $ci + "\",\"sip_code\":487}";
+        $http_req(method) = "POST";
+        $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+        $http_req(hdr) = "Content-Type: application/json";
+        $http_req(body) = $var(end_body);
+        $http_req(suspend) = 0;
+        http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", "CALL_END_REPLY");
+    }
+
+    # In-dialog routing (BYE/ACK/re-INVITE with Route headers)
     if (loose_route()) {
-        if (is_method("BYE")) { setflag(1); }
+        # Mid-call re-INVITE detection — privacy signal for the panel.
+        # In-dialog INVITE means the call's already established and one
+        # leg is renegotiating SDP (NAT roam, conference join, fork, or
+        # a third-party bridge). We POST the new SDP body so the backend
+        # can record the endpoint delta and surface an alert.
+        if (is_method("INVITE")) {
+            $var(sdp_b64) = $(rb{s.encode.base64});
+            $var(ri_body) = "{\"call_id\":\"" + $ci + "\",\"sdp_b64\":\"" + $var(sdp_b64) + "\"}";
+            $http_req(method) = "POST";
+            $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+            $http_req(hdr) = "Content-Type: application/json";
+            $http_req(body) = $var(ri_body);
+            $http_req(suspend) = 0;
+            http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-reinvite", "CALL_REINVITE_REPLY");
+        }
+        t_relay();
+        exit;
+    }
+
+    # Non-routed BYE/CANCEL: still need to relay or terminate. For BYE
+    # without Route headers, t_relay() tries to forward by R-URI which
+    # works for our setup (R-URI points at the other leg's endpoint).
+    if (is_method("BYE") || is_method("CANCEL")) {
         t_relay();
         exit;
     }
@@ -217,6 +327,35 @@ request_route {
         sl_send_reply("405","Method Not Allowed");
         exit;
     }
+
+    # Absorb retransmissions and send 100 Trying immediately. Without
+    # this, Asterisk's T1=500ms retransmit timer fires before our async
+    # /route lookup returns, and each retransmission re-enters
+    # request_route and spawns ANOTHER http_async_query against the same
+    # Call-ID. tm then queues each callback as a new branch on the same
+    # transaction; after 12 branches it dies with
+    #   ERROR: tm [t_fwd.c:787]: add_uac(): maximum number of branches exceeded
+    # and the call never relays. t_newtran() makes tm own the
+    # transaction so duplicates get absorbed (return code 0), and the
+    # 100 Trying stops Asterisk from retransmitting at all.
+    t_newtran();
+    if ($retcode == 0) {
+        # Retransmission already absorbed by tm — drop silently.
+        exit;
+    }
+    if ($retcode < 0) {
+        sl_reply_error();
+        exit;
+    }
+    t_reply("100", "Trying");
+
+    # Snapshot original INVITE fields keyed by Call-ID. The /route
+    # async callback reads these back instead of $rU/$fU/$si because
+    # those pseudovars resolve against a degraded message context in
+    # the callback worker (symptom: $rU becomes the placeholder "you").
+    $sht(call=>$ci::dnis) = $rU;
+    $sht(call=>$ci::ani)  = $fU;
+    $sht(call=>$ci::sig)  = $si;
 
     # 1. async route lookup against the control plane. The control plane
     # requires bearer auth; we use the per-node agent token (the same one
@@ -265,21 +404,29 @@ route[ROUTE_REPLY] {
     jansson_get("client_id",         $http_rb, "$var(client_id)");
     jansson_get("carrier_id",        $http_rb, "$var(carrier_id)");
 
+    # Pull snapshot of original INVITE fields (set in request_route).
+    # Reading $rU/$fU directly here returns "you"/empty on Kamailio 5.8
+    # in async callback context — see htable "call" comment up top.
+    $var(dnis_orig) = $sht(call=>$ci::dnis);
+    $var(ani_orig)  = $sht(call=>$ci::ani);
+    if ($var(dnis_orig) == $null || $var(dnis_orig) == "" || $var(dnis_orig) == "<null>") {
+        # htable miss (call expired or never stamped) — fall back to $rU.
+        # Better a possibly-wrong user-part than a guaranteed-wrong "you".
+        $var(dnis_orig) = $rU;
+    }
+    if ($var(ani_orig) == $null || $var(ani_orig) == "" || $var(ani_orig) == "<null>") {
+        $var(ani_orig) = $fU;
+    }
+
     # 2. force outbound from the client's signaling IP
     $fs = "udp:" + $var(sig_ip) + ":5060";
 
-    # 3. rewrite media to the chosen media IP. rtpengine_manage() requires
-    # rtpengine running on this SipProxy (default sock 127.0.0.1:2223),
-    # which on our split SipProxy + MediaNode topology isn't the case.
-    # Without a working rtpengine here, this call corrupts transaction
-    # state and t_relay never sends the INVITE. SKIPPED until the agent
-    # is taught to configure rtpengine_sock to point at the remote media
-    # node — separate work. SDP passes through unmodified, which means
-    # RTP will flow direct between dialer and carrier without going
-    # through MediaNode1. Acceptable for signaling-test phase; before
-    # going to production traffic we need rtpengine on this proxy or
-    # remote rtpengine_sock configured.
-    # rtpengine_manage("replace-origin replace-session-connection out-iface=" + $var(m_ip));
+    # 3. rewrite media to the chosen media IP. The line below is rendered
+    # active when rtpengine_sock is set to a non-localhost address
+    # (split-host topology, remote MediaNode). When sock is the default
+    # localhost stub, the line is commented out so kamailio doesn't try
+    # to reach a daemon that isn't there.
+    {{RTPENGINE_MANAGE_REQUEST}}
 
     # 4. notify the control plane: call-start
     # SDP body is base64-encoded so we don't have to JSON-escape newlines,
@@ -289,8 +436,8 @@ route[ROUTE_REPLY] {
     $var(sdp_b64) = $(rb{s.encode.base64});
     $var(start_body) = "{\"call_id\":\"" + $ci + "\",\"client_id\":" + $var(client_id)
         + ",\"carrier_id\":" + $var(carrier_id) + ",\"media_ip\":\"" + $var(m_ip)
-        + "\",\"signaling_from\":\"" + $var(sig_ip) + "\",\"ani\":\"" + $fU
-        + "\",\"dnis\":\"" + $rU + "\",\"sdp_b64\":\"" + $var(sdp_b64) + "\"}";
+        + "\",\"signaling_from\":\"" + $var(sig_ip) + "\",\"ani\":\"" + $var(ani_orig)
+        + "\",\"dnis\":\"" + $var(dnis_orig) + "\",\"sdp_b64\":\"" + $var(sdp_b64) + "\"}";
     $http_req(method) = "POST";
     $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
     $http_req(hdr) = "Content-Type: application/json";
@@ -309,10 +456,11 @@ route[ROUTE_REPLY] {
     # Rewrite the Request URI to point at the carrier. We use $ru rewrite
     # rather than $du (destination URI override) because Kamailio's TM
     # branch-add was choking on $du in this build — $ru is the more
-    # conventional path. The dialed number (user part) stays from $rU;
-    # only host:port get rewritten.
-    $ru = "sip:" + $rU + "@" + $var(c_host) + ":" + $var(c_port);
-    xlog("L_NOTICE", "mp-relay: r-uri=$ru sig=$fs\n");
+    # conventional path. The dialed number (user part) comes from the
+    # htable snapshot (see above) because $rU is unreliable in this
+    # callback context.
+    $ru = "sip:" + $var(dnis_orig) + "@" + $var(c_host) + ":" + $var(c_port);
+    xlog("L_NOTICE", "mp-relay: r-uri=$ru sig=$fs dnis=$var(dnis_orig)\n");
     t_on_reply("ROUTE_REPLIES");
     t_relay();
 }
@@ -321,8 +469,22 @@ route[CALL_START_REPLY] { return; }
 route[CALL_PROGRESS_REPLY] { return; }
 
 onreply_route[ROUTE_REPLIES] {
-    if (status =~ "(180|183|200)") {
-        rtpengine_manage();
+    # rtpengine_manage() on 18x/200 replies. Rendered active or
+    # commented based on rtpengine_sock — see request-route block above.
+    {{RTPENGINE_MANAGE_REPLY}}
+
+    # Final non-2xx reply: call setup failed. Notify /call-end so the
+    # node_ips counter decrements (call-start already incremented it).
+    # 4xx/5xx/6xx classes only — provisional 1xx and success 2xx are
+    # not terminal.
+    if (status =~ "^[456]") {
+        $var(end_body) = "{\"call_id\":\"" + $ci + "\",\"sip_code\":" + $rs + "}";
+        $http_req(method) = "POST";
+        $http_req(hdr) = "Authorization: Bearer {{AGENT_TOKEN}}";
+        $http_req(hdr) = "Content-Type: application/json";
+        $http_req(body) = $var(end_body);
+        $http_req(suspend) = 0;
+        http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", "CALL_END_REPLY");
     }
     # PDD: fire only on first 18x for this dialog. Once we report it,
     # null the htable entry so retransmits / re-INVITEs don't overwrite.
@@ -356,4 +518,5 @@ event_route[tm:local-request] {
 }
 
 route[CALL_END_REPLY] { return; }
+route[CALL_REINVITE_REPLY] { return; }
 `
