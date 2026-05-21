@@ -127,6 +127,8 @@ export interface ActiveCallRow {
 export interface ClientDetail extends Client {
   signaling_ip_id: number | null;
   signaling_ip: string | null;
+  max_attempts_per_lead: number;
+  rate_limit_window_seconds: number;
 }
 export interface DialerIP {
   id: number;

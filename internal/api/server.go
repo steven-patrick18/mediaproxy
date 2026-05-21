@@ -43,6 +43,10 @@ func (s *Server) Router() *gin.Engine {
 		agent.POST("/firewall-applied", s.agentFirewallApplied)
 		agent.POST("/call-start", s.callStart)
 		agent.POST("/call-end", s.callEnd)
+		// Kamailio's http_async_query carries the agent's bearer token; the
+		// same /route handler is also exposed under the admin-auth group
+		// below for the panel's test-route diagnostic.
+		agent.GET("/route", s.routeResolve)
 	}
 
 	v1 := r.Group("/api/v1")

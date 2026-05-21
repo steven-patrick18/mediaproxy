@@ -9,13 +9,15 @@ import (
 )
 
 type ClientDetail struct {
-	ID            int64     `json:"id"`
-	ResellerID    int64     `json:"reseller_id"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	SignalingIPID *int64    `json:"signaling_ip_id,omitempty"`
-	SignalingIP   *string   `json:"signaling_ip,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                     int64     `json:"id"`
+	ResellerID             int64     `json:"reseller_id"`
+	Name                   string    `json:"name"`
+	Status                 string    `json:"status"`
+	SignalingIPID          *int64    `json:"signaling_ip_id,omitempty"`
+	SignalingIP            *string   `json:"signaling_ip,omitempty"`
+	MaxAttemptsPerLead     int       `json:"max_attempts_per_lead"`
+	RateLimitWindowSeconds int       `json:"rate_limit_window_seconds"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 // Extends listClients to include signaling IP info.
@@ -30,9 +32,11 @@ func (s *Server) getClientDetail(c *gin.Context) {
 	err = s.deps.PG.QueryRow(c.Request.Context(), `
 		SELECT c.id, c.reseller_id, c.name, c.status, c.signaling_ip_id,
 		       (SELECT host(ip_address) FROM signaling_ips WHERE id = c.signaling_ip_id),
+		       c.max_attempts_per_lead, c.rate_limit_window_seconds,
 		       c.created_at
 		  FROM clients c WHERE c.id = $1
-	`, id).Scan(&d.ID, &d.ResellerID, &d.Name, &d.Status, &d.SignalingIPID, &d.SignalingIP, &d.CreatedAt)
+	`, id).Scan(&d.ID, &d.ResellerID, &d.Name, &d.Status, &d.SignalingIPID, &d.SignalingIP,
+		&d.MaxAttemptsPerLead, &d.RateLimitWindowSeconds, &d.CreatedAt)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return

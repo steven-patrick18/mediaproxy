@@ -11,8 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type Decision struct {
@@ -37,34 +40,69 @@ func (e *Error) Error() string { return fmt.Sprintf("%d: %s", e.Code, e.Message)
 
 // Resolve looks up the routing decision for one call. Steps:
 //   1. dialer source IP   → client (via client_ips)
+//   1b. per-lead rate-limit check (if the client has it enabled): reject
+//       early if this client has already dialed this DNIS too many times in
+//       the configured window. Kamailio replies 486 Busy Here so Vicidial
+//       treats it as a "don't immediately retry" disposition.
 //   2. client + DNIS      → carrier (via routes, longest-prefix match, priority)
 //   3. client             → signaling IP (clients.signaling_ip_id)
 //   4. client + carrier   → active assignment → IP group → pick member by strategy
 //
 // Any failure produces an Error with a SIP-friendly code so Kamailio can
-// reply with the right status (403 Forbidden, 404 Not Found, 503 Busy).
-func Resolve(ctx context.Context, pg *pgxpool.Pool, srcIP, dnis string) (*Decision, error) {
-	// --- step 1: client by dialer source IP ---
+// reply with the right status (403 Forbidden, 404 Not Found, 486 Busy,
+// 503 Service Unavailable).
+//
+// rdb may be nil — when it is, the per-lead rate-limit step is skipped
+// entirely (so tests and the admin diagnostic don't require Redis).
+func Resolve(ctx context.Context, pg *pgxpool.Pool, rdb *redis.Client, srcIP, dnis string) (*Decision, error) {
+	// --- step 1: client by dialer source IP + rate-limit config ---
 	var (
-		clientID   int64
-		clientName string
-		sigID      *int64
-		sigIP      *string
+		clientID         int64
+		clientName       string
+		sigID            *int64
+		sigIP            *string
+		maxAttempts      int
+		rateWindowSecs   int
 	)
 	err := pg.QueryRow(ctx, `
-		SELECT c.id, c.name, c.signaling_ip_id, host(s.ip_address)
+		SELECT c.id, c.name, c.signaling_ip_id, host(s.ip_address),
+		       c.max_attempts_per_lead, c.rate_limit_window_seconds
 		  FROM client_ips ci
 		  JOIN clients c ON c.id = ci.client_id
 		  LEFT JOIN signaling_ips s ON s.id = c.signaling_ip_id
 		 WHERE ci.ip_address = $1::inet
 		   AND ci.status = 'active' AND c.status = 'active'
 		 LIMIT 1
-	`, srcIP).Scan(&clientID, &clientName, &sigID, &sigIP)
+	`, srcIP).Scan(&clientID, &clientName, &sigID, &sigIP, &maxAttempts, &rateWindowSecs)
 	if err != nil {
 		return nil, &Error{Code: 403, Message: "dialer ip not whitelisted"}
 	}
 	if sigIP == nil {
 		return nil, &Error{Code: 500, Message: "client has no signaling ip assigned"}
+	}
+
+	// --- step 1b: per-lead rate limit ---
+	if rdb != nil && maxAttempts > 0 && rateWindowSecs > 0 && dnis != "" {
+		key := "lead_attempts:" + strconv.FormatInt(clientID, 10) + ":" + dnis
+		// Short Redis timeout: routing decisions need to stay fast and we
+		// must never block a tick on a misbehaving Redis.
+		rctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		count, rerr := rdb.Incr(rctx, key).Result()
+		if rerr != nil {
+			cancel()
+			// Fail-open on Redis trouble. Calls still route; surface the
+			// outage in logs so ops can see the rate limit is unenforced.
+			slog.Error("router: lead rate-limit Redis INCR failed (failing open)",
+				"client_id", clientID, "dnis", dnis, "err", rerr)
+		} else {
+			if count == 1 {
+				_, _ = rdb.Expire(rctx, key, time.Duration(rateWindowSecs)*time.Second).Result()
+			}
+			cancel()
+			if count > int64(maxAttempts) {
+				return nil, &Error{Code: 486, Message: "per-lead rate limit exceeded for this client"}
+			}
+		}
 	}
 
 	// --- step 2: pick carrier via longest-prefix match on routes ---

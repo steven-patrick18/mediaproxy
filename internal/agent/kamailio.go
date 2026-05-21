@@ -154,9 +154,13 @@ request_route {
         exit;
     }
 
-    # 1. async route lookup against the control plane
+    # 1. async route lookup against the control plane. The control plane
+    # requires bearer auth; we use the per-node agent token (the same one
+    # call-start / call-end use below). The header is set per-request via
+    # the writeable pseudo-variable $http_req(headers).
     $var(qs) = "src_ip=" + $si + "&dnis=" + $rU;
-    http_async_query("{{CONTROL_PLANE_URL}}/api/v1/route?" + $var(qs), "ROUTE_REPLY");
+    $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\n";
+    http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/route?" + $var(qs), "ROUTE_REPLY");
     exit;
 }
 
@@ -172,6 +176,10 @@ route[ROUTE_REPLY] {
         switch ($var(code)) {
             case 403: sl_send_reply("403","Forbidden"); break;
             case 404: sl_send_reply("404","Not Found"); break;
+            # 486 = per-client per-lead rate limit hit. Vicidial treats
+            # 486 Busy Here as a real busy and won't immediately retry,
+            # which is exactly what we want.
+            case 486: sl_send_reply("486","Busy Here"); break;
             case 503: sl_send_reply("503","Service Unavailable"); break;
             default:  sl_send_reply("500","Routing Error");
         }
@@ -196,6 +204,7 @@ route[ROUTE_REPLY] {
         + ",\"carrier_id\":" + $var(carrier_id) + ",\"media_ip\":\"" + $var(m_ip)
         + "\",\"signaling_from\":\"" + $var(sig_ip) + "\",\"ani\":\"" + $fU
         + "\",\"dnis\":\"" + $rU + "\"}";
+    $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", $var(start_body), "CALL_START_REPLY");
 
     # 5. relay
@@ -216,6 +225,7 @@ onreply_route[ROUTE_REPLIES] {
 event_route[tm:local-request] {
     if (is_method("BYE")) {
         $var(end_body) = "{\"call_id\":\"" + $ci + "\",\"sip_code\":200}";
+        $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
         http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-end", $var(end_body), "CALL_END_REPLY");
     }
 }

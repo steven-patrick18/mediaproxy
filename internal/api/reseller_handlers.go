@@ -125,10 +125,12 @@ func (s *Server) createClient(c *gin.Context) {
 }
 
 type patchClientRequest struct {
-	Name       *string `json:"name"`
-	ResellerID *int64  `json:"reseller_id"`
-	Status     *string `json:"status"`
-	Notes      *string `json:"notes"`
+	Name                   *string `json:"name"`
+	ResellerID             *int64  `json:"reseller_id"`
+	Status                 *string `json:"status"`
+	Notes                  *string `json:"notes"`
+	MaxAttemptsPerLead     *int    `json:"max_attempts_per_lead"`
+	RateLimitWindowSeconds *int    `json:"rate_limit_window_seconds"`
 }
 
 func (s *Server) patchClient(c *gin.Context) {
@@ -150,14 +152,28 @@ func (s *Server) patchClient(c *gin.Context) {
 			return
 		}
 	}
+	// Both rate-limit fields are nullable INTs (pointer-to-int). 0 means the
+	// caller wants the limit OFF; we accept that as a deliberate write.
+	// Negative is nonsense.
+	if req.MaxAttemptsPerLead != nil && *req.MaxAttemptsPerLead < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_attempts_per_lead must be >= 0"})
+		return
+	}
+	if req.RateLimitWindowSeconds != nil && *req.RateLimitWindowSeconds < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "rate_limit_window_seconds must be >= 0"})
+		return
+	}
 	tag, err := s.deps.PG.Exec(c.Request.Context(), `
 		UPDATE clients
-		   SET name        = COALESCE($2, name),
-		       reseller_id = COALESCE($3, reseller_id),
-		       status      = COALESCE($4, status),
-		       notes       = COALESCE($5, notes)
+		   SET name                       = COALESCE($2, name),
+		       reseller_id                = COALESCE($3, reseller_id),
+		       status                     = COALESCE($4, status),
+		       notes                      = COALESCE($5, notes),
+		       max_attempts_per_lead      = COALESCE($6, max_attempts_per_lead),
+		       rate_limit_window_seconds  = COALESCE($7, rate_limit_window_seconds)
 		 WHERE id = $1
-	`, id, req.Name, req.ResellerID, req.Status, req.Notes)
+	`, id, req.Name, req.ResellerID, req.Status, req.Notes,
+		req.MaxAttemptsPerLead, req.RateLimitWindowSeconds)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

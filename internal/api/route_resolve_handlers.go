@@ -27,7 +27,7 @@ func (s *Server) routeResolve(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "src_ip and dnis are required"})
 		return
 	}
-	dec, err := router.Resolve(c.Request.Context(), s.deps.PG, src, dnis)
+	dec, err := router.Resolve(c.Request.Context(), s.deps.PG, s.deps.Redis, src, dnis)
 	if err != nil {
 		var re *router.Error
 		if errors.As(err, &re) {
