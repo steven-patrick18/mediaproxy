@@ -118,6 +118,11 @@ export interface CarrierQuality {
   asr_pct: number;
   acd_seconds: number;
   cause_mix: Record<string, number>;
+  avg_pdd_ms?: number | null;
+  p95_pdd_ms?: number | null;
+  pdd_samples: number;
+  top_codec?: string;
+  top_codec_pct?: number;
   grade: string;
   grade_reasons: string[];
 }

@@ -31,12 +31,13 @@ type callStartReq struct {
 }
 
 // sdpFields holds the fields we extract from an SDP body for the Privacy
-// Monitor. All three are best-effort and may be empty if the SDP didn't
-// include the expected lines.
+// Monitor. All are best-effort and may be empty if the SDP didn't include
+// the expected lines.
 type sdpFields struct {
 	Transport   string // e.g. "RTP/AVP", "RTP/SAVP", "UDP/TLS/RTP/SAVP"
 	EndpointIP  string // c=IN IP4 <addr>
 	CryptoSuite string // a=crypto:N <SUITE> ...
+	Codecs      string // comma-joined list, e.g. "PCMU/8000,PCMA/8000,G729/8000"
 }
 
 // derefStr returns *s or "" if s is nil. Lets us write the same INSERT
@@ -48,19 +49,31 @@ func derefStr(s *string) string {
 	return *s
 }
 
-// parseSDP pulls out the three fields the Privacy page cares about. The
-// parser is intentionally permissive — bogus / partial SDP is common in
-// the real world and we'd rather report what we found than reject.
+// parseSDP pulls out the fields the Privacy page cares about. The parser
+// is intentionally permissive — bogus / partial SDP is common in the real
+// world and we'd rather report what we found than reject.
+//
+// Codec extraction walks the SDP twice: first pass builds an rtpmap dict
+// (payload-type number -> "NAME/CLOCK"), second pass walks the audio m=
+// line's payload-type list in order and looks each one up. This preserves
+// the offerer's preference ordering. Static payload types not declared
+// via a=rtpmap: get IANA-default names (PCMU=0, PCMA=8, G729=18, etc.).
 func parseSDP(body string) sdpFields {
 	var f sdpFields
+	var mAudioPTs []string
+	rtpmap := map[string]string{}
+
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		switch {
 		case strings.HasPrefix(line, "m=audio "):
-			// m=audio <port> <transport> <fmt>...
+			// m=audio <port> <transport> <pt1> <pt2> ...
 			parts := strings.Fields(line)
 			if len(parts) >= 3 && f.Transport == "" {
 				f.Transport = parts[2]
+			}
+			if len(mAudioPTs) == 0 && len(parts) > 3 {
+				mAudioPTs = append(mAudioPTs, parts[3:]...)
 			}
 		case strings.HasPrefix(line, "c=IN IP4 "):
 			rest := strings.TrimSpace(strings.TrimPrefix(line, "c=IN IP4 "))
@@ -78,9 +91,90 @@ func parseSDP(body string) sdpFields {
 			if len(parts) >= 2 && f.CryptoSuite == "" {
 				f.CryptoSuite = parts[1]
 			}
+		case strings.HasPrefix(line, "a=rtpmap:"):
+			// a=rtpmap:<pt> <encoding name>/<clock rate>[/<channels>]
+			rest := strings.TrimPrefix(line, "a=rtpmap:")
+			parts := strings.Fields(rest)
+			if len(parts) >= 2 {
+				rtpmap[parts[0]] = parts[1]
+			}
 		}
 	}
+	// Build codec list in offer order. Fall back to IANA defaults for static PTs.
+	if len(mAudioPTs) > 0 {
+		out := make([]string, 0, len(mAudioPTs))
+		for _, pt := range mAudioPTs {
+			if name, ok := rtpmap[pt]; ok {
+				out = append(out, name)
+				continue
+			}
+			if def := ianaStaticCodec(pt); def != "" {
+				out = append(out, def)
+				continue
+			}
+			out = append(out, "PT"+pt)
+		}
+		f.Codecs = strings.Join(out, ",")
+	}
 	return f
+}
+
+// ianaStaticCodec maps the well-known static payload-type numbers (RFC
+// 3551) to their codec names. Only audio PTs that show up in real SIP
+// trunks are listed; anything else falls through to a "PTn" placeholder
+// so the operator can still see the call had something there.
+func ianaStaticCodec(pt string) string {
+	switch pt {
+	case "0":
+		return "PCMU/8000"
+	case "3":
+		return "GSM/8000"
+	case "4":
+		return "G723/8000"
+	case "8":
+		return "PCMA/8000"
+	case "9":
+		return "G722/8000"
+	case "18":
+		return "G729/8000"
+	}
+	return ""
+}
+
+// POST /api/v1/agent/call-progress
+// Body: { "call_id": "...", "pdd_ms": <int> }
+//
+// Kamailio fires this from onreply_route on the first 18x for a dialog
+// (180 Ringing or 183 Session Progress). PDD is the wall-clock delta in
+// milliseconds between when we relayed the INVITE outbound and when the
+// upstream carrier's first ring/progress reply arrived.
+//
+// We deliberately only accept the FIRST PDD report per call — subsequent
+// 18x retransmissions or re-INVITEs shouldn't overwrite the original PDD.
+// Implemented at the SQL level with `WHERE pdd_ms IS NULL`.
+type callProgressReq struct {
+	CallID string `json:"call_id" binding:"required"`
+	PDDMs  int    `json:"pdd_ms" binding:"required,gte=0,lte=120000"`
+}
+
+func (s *Server) callProgress(c *gin.Context) {
+	nodeID := c.GetInt64("agent_node_id")
+	var req callProgressReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := s.deps.PG.Exec(c.Request.Context(), `
+		UPDATE active_calls
+		   SET pdd_ms = $3
+		 WHERE call_id = $1 AND node_id = $2 AND pdd_ms IS NULL
+	`, req.CallID, nodeID, req.PDDMs); err != nil {
+		slog.Error("call-progress: update pdd_ms failed",
+			"err", err, "call_id", req.CallID, "node_id", nodeID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // POST /api/v1/agent/call-start — Kamailio fires this on 200 OK.
@@ -108,15 +202,15 @@ func (s *Server) callStart(c *gin.Context) {
 		INSERT INTO active_calls (call_id, client_id, carrier_id, node_id,
 		                          media_ip, signaling_from, ani, dnis,
 		                          media_transport, media_endpoint_ip, crypto_suite,
-		                          started_at)
+		                          codecs_offered, started_at)
 		VALUES ($1, $2, $3, $4, NULLIF($5,'')::inet, NULLIF($6,'')::inet,
 		        NULLIF($7,''), NULLIF($8,''),
 		        NULLIF($9,''), NULLIF($10,'')::inet, NULLIF($11,''),
-		        now())
+		        NULLIF($12,''), now())
 		ON CONFLICT (call_id) DO UPDATE SET last_seen_at = now()
 	`, req.CallID, req.ClientID, req.CarrierID, nodeID,
 		req.MediaIP, req.SignalingFrom, req.ANI, req.DNIS,
-		sdp.Transport, sdp.EndpointIP, sdp.CryptoSuite)
+		sdp.Transport, sdp.EndpointIP, sdp.CryptoSuite, sdp.Codecs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -171,17 +265,20 @@ func (s *Server) callEnd(c *gin.Context) {
 	row := s.deps.PG.QueryRow(c.Request.Context(), `
 		DELETE FROM active_calls WHERE call_id = $1 AND node_id = $2
 		 RETURNING client_id, carrier_id, media_ip, signaling_from, ani, dnis, started_at,
-		           media_transport, host(media_endpoint_ip), crypto_suite
+		           media_transport, host(media_endpoint_ip), crypto_suite,
+		           pdd_ms, codecs_offered
 	`, req.CallID, nodeID)
 	var (
-		clientID, carrierID                    *int64
-		mediaIP, sigFrom                       *string
-		ani, dnis                              *string
-		startedAt                              time.Time
-		mediaTransport, mediaEndpoint, crypto  *string
+		clientID, carrierID                   *int64
+		mediaIP, sigFrom                      *string
+		ani, dnis                             *string
+		startedAt                             time.Time
+		mediaTransport, mediaEndpoint, crypto *string
+		pddMs                                 *int
+		codecsOffered                         *string
 	)
 	if err := row.Scan(&clientID, &carrierID, &mediaIP, &sigFrom, &ani, &dnis, &startedAt,
-		&mediaTransport, &mediaEndpoint, &crypto); err != nil {
+		&mediaTransport, &mediaEndpoint, &crypto, &pddMs, &codecsOffered); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "active call not found"})
 		return
 	}
@@ -199,12 +296,15 @@ func (s *Server) callEnd(c *gin.Context) {
 		INSERT INTO call_records
 		    (call_id, client_id, carrier_id, node_id, media_ip, signaling_from,
 		     ani, dnis, started_at, ended_at, duration_sec, disposition, sip_code,
-		     media_transport, media_endpoint_ip, crypto_suite)
+		     media_transport, media_endpoint_ip, crypto_suite,
+		     pdd_ms, codecs_offered)
 		VALUES ($1, $2, $3, $4, $5::inet, $6::inet, $7, $8, $9, now(), $10, $11, $12,
-		        $13, NULLIF($14,'')::inet, $15)
+		        $13, NULLIF($14,'')::inet, $15,
+		        $16, $17)
 	`, req.CallID, clientID, carrierID, nodeID, mediaIP, sigFrom, ani, dnis,
 		startedAt, dur, dispo, sipCode,
-		mediaTransport, derefStr(mediaEndpoint), crypto)
+		mediaTransport, derefStr(mediaEndpoint), crypto,
+		pddMs, codecsOffered)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

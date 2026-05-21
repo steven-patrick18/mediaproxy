@@ -337,6 +337,8 @@ export default function Privacy() {
                 <th className="px-3 py-2 text-right">Calls</th>
                 <th className="px-3 py-2 text-right">ASR</th>
                 <th className="px-3 py-2 text-right">ACD</th>
+                <th className="px-3 py-2 text-right">PDD avg / p95</th>
+                <th className="px-3 py-2">Top codec</th>
                 <th className="px-3 py-2">Cause-code mix</th>
                 <th className="px-3 py-2">Reasons</th>
               </tr>
@@ -344,64 +346,90 @@ export default function Privacy() {
             <tbody className="divide-y divide-slate-100">
               {quality.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
                     No carriers defined yet.
                   </td>
                 </tr>
               )}
-              {quality.map((q) => (
-                <tr key={q.carrier_id}>
-                  <td className="px-3 py-2 font-medium">{q.carrier_name}</td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={`inline-block min-w-[1.75rem] rounded px-2 py-0.5 text-center font-bold ${
-                        q.grade === "A"
-                          ? "bg-emerald-100 text-emerald-800"
-                          : q.grade === "B"
-                            ? "bg-lime-100 text-lime-800"
-                            : q.grade === "C"
-                              ? "bg-amber-100 text-amber-800"
-                              : q.grade === "D"
-                                ? "bg-orange-100 text-orange-800"
-                                : q.grade === "F"
-                                  ? "bg-rose-100 text-rose-800"
-                                  : "bg-slate-100 text-slate-500"
-                      }`}
-                    >
-                      {q.grade}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono">{q.total}</td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {q.total > 0 ? `${q.asr_pct.toFixed(1)}%` : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {q.answered > 0 ? `${q.acd_seconds.toFixed(0)}s` : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    {q.total === 0 ? (
-                      <span className="text-slate-400">—</span>
-                    ) : (
-                      <span className="font-mono text-slate-600">
-                        {(["200", "486", "487", "480", "503", "other"] as const)
-                          .filter((k) => (q.cause_mix[k] ?? 0) > 0)
-                          .map((k) => `${k}:${q.cause_mix[k]}`)
-                          .join("  ")}
+              {quality.map((q) => {
+                const pddTone =
+                  q.avg_pdd_ms == null
+                    ? "text-slate-400"
+                    : q.avg_pdd_ms > 8000
+                      ? "text-rose-700"
+                      : q.avg_pdd_ms > 5000
+                        ? "text-amber-700"
+                        : "text-slate-600";
+                const codecTone =
+                  q.top_codec_pct != null &&
+                  q.top_codec_pct >= 80 &&
+                  q.top_codec?.toUpperCase().startsWith("G729")
+                    ? "text-amber-700 font-medium"
+                    : "text-slate-600";
+                return (
+                  <tr key={q.carrier_id}>
+                    <td className="px-3 py-2 font-medium">{q.carrier_name}</td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-block min-w-[1.75rem] rounded px-2 py-0.5 text-center font-bold ${
+                          q.grade === "A"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : q.grade === "B"
+                              ? "bg-lime-100 text-lime-800"
+                              : q.grade === "C"
+                                ? "bg-amber-100 text-amber-800"
+                                : q.grade === "D"
+                                  ? "bg-orange-100 text-orange-800"
+                                  : q.grade === "F"
+                                    ? "bg-rose-100 text-rose-800"
+                                    : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {q.grade}
                       </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-slate-500">
-                    {q.grade_reasons.join(" · ")}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">{q.total}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {q.total > 0 ? `${q.asr_pct.toFixed(1)}%` : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {q.answered > 0 ? `${q.acd_seconds.toFixed(0)}s` : "—"}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono text-xs ${pddTone}`}>
+                      {q.avg_pdd_ms != null
+                        ? `${Math.round(q.avg_pdd_ms)}ms / ${Math.round(q.p95_pdd_ms ?? 0)}ms`
+                        : "—"}
+                    </td>
+                    <td className={`px-3 py-2 text-xs ${codecTone}`}>
+                      {q.top_codec
+                        ? `${q.top_codec} (${(q.top_codec_pct ?? 0).toFixed(0)}%)`
+                        : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      {q.total === 0 ? (
+                        <span className="text-slate-400">—</span>
+                      ) : (
+                        <span className="font-mono text-slate-600">
+                          {(["200", "486", "487", "480", "503", "other"] as const)
+                            .filter((k) => (q.cause_mix[k] ?? 0) > 0)
+                            .map((k) => `${k}:${q.cause_mix[k]}`)
+                            .join("  ")}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-500">
+                      {q.grade_reasons.join(" · ")}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
-          Phase 1 of route-quality monitoring. Next phases (planned): per-call PDD from Kamailio
-          timing, codec-locking detection from SDP, RTP/MOS &amp; jitter from RTPEngine, and full
-          SIP capture via HOMER for SIP-ladder drill-down.
+          Phases 1–2 shipped: CDR metrics + PDD timing + codec-lock detection. Remaining:
+          Phase 3 — RTP MOS / jitter / loss from RTPEngine NG socket;
+          Phase 4 — HOMER integration for full SIP-ladder drill-down per call.
         </p>
       </section>
 

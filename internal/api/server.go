@@ -42,6 +42,7 @@ func (s *Server) Router() *gin.Engine {
 		agent.GET("/firewall", s.agentFirewallConfig)
 		agent.POST("/firewall-applied", s.agentFirewallApplied)
 		agent.POST("/call-start", s.callStart)
+		agent.POST("/call-progress", s.callProgress)
 		agent.POST("/call-end", s.callEnd)
 		// Kamailio's http_async_query carries the agent's bearer token; the
 		// same /route handler is also exposed under the admin-auth group

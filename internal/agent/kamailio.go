@@ -101,8 +101,12 @@ modparam("pike", "sampling_time_unit", 2)
 modparam("pike", "reqs_density_per_unit", 60)
 modparam("pike", "remove_latency", 4)
 
-####### htable: scanner blocklist #######
+####### htable: scanner blocklist + PDD timing #######
 modparam("htable", "htable", "blocked=>size=12;autoexpire=86400")
+# pdd: per-call INVITE timestamp in ms. autoexpire=120 = drop stale entries
+# after 2 minutes (way longer than any plausible PDD; 18x always arrives in
+# under 30s on every real route, including bad ones).
+modparam("htable", "htable", "pdd=>size=10;autoexpire=120")
 
 ####### http_async_client: control-plane #######
 modparam("http_async_client", "tls_verify_host", 0)
@@ -212,17 +216,32 @@ route[ROUTE_REPLY] {
     $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
     http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-start", $var(start_body), "CALL_START_REPLY");
 
-    # 5. relay
+    # 5. relay. Stamp the INVITE timestamp into htable keyed by Call-ID so
+    # onreply_route can compute PDD when the first 18x arrives.
+    $sht(pdd=>$ci) = $TV(s) * 1000 + $TV(u) / 1000;
     $du = $var(c_xport) + ":" + $var(c_host) + ":" + $var(c_port);
     t_on_reply("ROUTE_REPLIES");
     t_relay();
 }
 
 route[CALL_START_REPLY] { }
+route[CALL_PROGRESS_REPLY] { }
 
 onreply_route[ROUTE_REPLIES] {
     if (status =~ "(180|183|200)") {
         rtpengine_manage();
+    }
+    # PDD: fire only on first 18x for this dialog. Once we report it,
+    # null the htable entry so retransmits / re-INVITEs don't overwrite.
+    if (status =~ "^18[03]$" && $sht(pdd=>$ci) != $null) {
+        $var(now_ms) = $TV(s) * 1000 + $TV(u) / 1000;
+        $var(pdd_ms) = $var(now_ms) - $sht(pdd=>$ci);
+        $sht(pdd=>$ci) = $null;
+        if ($var(pdd_ms) >= 0 && $var(pdd_ms) <= 120000) {
+            $var(prog_body) = "{\"call_id\":\"" + $ci + "\",\"pdd_ms\":" + $var(pdd_ms) + "}";
+            $http_req(all_hdrs) = "Authorization: Bearer {{AGENT_TOKEN}}\r\nContent-Type: application/json\r\n";
+            http_async_query("{{CONTROL_PLANE_URL}}/api/v1/agent/call-progress", $var(prog_body), "CALL_PROGRESS_REPLY");
+        }
     }
 }
 
