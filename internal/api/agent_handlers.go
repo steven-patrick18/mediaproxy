@@ -113,9 +113,33 @@ type agentCommand struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// RTPEngineSet maps a media-node id to its NG control socket URL so a
+// sip_proxy agent can render `modparam("rtpengine", "rtpengine_sock",
+// "<set_id> == <sock>")` for every active media node and per-call
+// pick the right one via set_rtpengine_set("<media_node_id>"). The
+// set_id MATCHES media_nodes.id, so the /route response's
+// media_node_id flows straight into Kamailio without an extra lookup.
+type RTPEngineSet struct {
+	SetID int64  `json:"set_id"`
+	Sock  string `json:"sock"`
+}
+
+// AgentTunables: per-node config delivered via heartbeat so operators
+// can adjust workers / cache TTL from the panel instead of SSHing in
+// to edit YAML. Each field is a pointer — nil means "agent uses its
+// compiled-in default" (preserves existing behaviour for nodes that
+// haven t been customised in the panel).
+type AgentTunables struct {
+	KamailioWorkers   *int `json:"kamailio_workers,omitempty"`
+	RouteCacheSeconds *int `json:"route_cache_seconds,omitempty"`
+	RouteCacheKeyLen  *int `json:"route_cache_key_len,omitempty"`
+}
+
 type agentHeartbeatResponse struct {
-	ExpectedIPs []string       `json:"expected_ips"`
-	Commands    []agentCommand `json:"commands"`
+	ExpectedIPs      []string       `json:"expected_ips"`
+	Commands         []agentCommand `json:"commands"`
+	RTPEngineSets    []RTPEngineSet `json:"rtpengine_sets,omitempty"`
+	Tunables         AgentTunables  `json:"tunables"`
 }
 
 func (s *Server) agentHeartbeat(c *gin.Context) {
@@ -271,7 +295,52 @@ func (s *Server) agentHeartbeat(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, agentHeartbeatResponse{ExpectedIPs: expected, Commands: commands})
+	// Per-node tunables — pulled from media_nodes columns. NULLs come
+	// back as nil pointers so the agent uses its compiled-in defaults.
+	var tunables AgentTunables
+	if err := s.deps.PG.QueryRow(c.Request.Context(),
+		`SELECT kamailio_workers, route_cache_seconds, route_cache_key_len
+		   FROM media_nodes WHERE id = $1`, nodeID,
+	).Scan(&tunables.KamailioWorkers, &tunables.RouteCacheSeconds, &tunables.RouteCacheKeyLen); err != nil {
+		// Non-fatal — operator just doesn t get tunable delivery this tick.
+		slog.Warn("heartbeat: read tunables failed", "node_id", nodeID, "err", err)
+	}
+
+	// rtpengine set map — only meaningful for sip_proxy nodes, who use
+	// it to address one of multiple media nodes per call. We give them
+	// every CURRENTLY-ALIVE media node (last_seen_at < 2 min ago and
+	// status != 'offline'/'disabled'). Set id = node id so the /route
+	// response s media_node_id is the set id without translation.
+	var sets []RTPEngineSet
+	if role == "sip_proxy" {
+		if rows, err := s.deps.PG.Query(c.Request.Context(), `
+			SELECT id, host(host_ip)
+			  FROM media_nodes
+			 WHERE role = 'media'
+			   AND status IN ('online', 'draining')
+			   AND last_seen_at > now() - interval '2 minutes'
+			 ORDER BY id
+		`); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id int64
+				var host string
+				if rows.Scan(&id, &host) == nil {
+					sets = append(sets, RTPEngineSet{
+						SetID: id,
+						Sock:  "udp:" + host + ":2223",
+					})
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, agentHeartbeatResponse{
+		ExpectedIPs:   expected,
+		Commands:      commands,
+		RTPEngineSets: sets,
+		Tunables:      tunables,
+	})
 }
 
 type agentCommandResultRequest struct {

@@ -95,9 +95,29 @@ type Command struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// RTPEngineSet maps a media-node id to its NG control URL. Agents
+// running sip_proxy role receive the list of currently-alive media
+// nodes in every heartbeat and render one modparam per entry into
+// kamailio.cfg, plus a set_rtpengine_set("<id>") call per INVITE.
+type RTPEngineSet struct {
+	SetID int64  `json:"set_id"`
+	Sock  string `json:"sock"`
+}
+
+// Tunables: per-node config delivered by the control plane. Pointers
+// are nil when the operator hasn t customised that field, in which
+// case the agent uses its compiled-in default.
+type Tunables struct {
+	KamailioWorkers   *int `json:"kamailio_workers,omitempty"`
+	RouteCacheSeconds *int `json:"route_cache_seconds,omitempty"`
+	RouteCacheKeyLen  *int `json:"route_cache_key_len,omitempty"`
+}
+
 type HeartbeatResp struct {
-	ExpectedIPs []string  `json:"expected_ips"`
-	Commands    []Command `json:"commands"`
+	ExpectedIPs   []string       `json:"expected_ips"`
+	Commands      []Command      `json:"commands"`
+	RTPEngineSets []RTPEngineSet `json:"rtpengine_sets,omitempty"`
+	Tunables      Tunables       `json:"tunables"`
 }
 
 func (c *Client) Heartbeat(ctx context.Context, r HeartbeatReq) (*HeartbeatResp, error) {

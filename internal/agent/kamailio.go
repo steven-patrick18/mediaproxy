@@ -35,6 +35,22 @@ type KamailioGenOpts struct {
 	// key. 0 = full DNIS (safe). 3 = country-code-only (faster, requires
 	// routing rules with prefix length <= 3). See TUNING.md.
 	RouteCacheKeyLen int
+	// RTPEngineSets: every currently-alive media node and its NG control
+	// socket. Renders as one modparam("rtpengine", "rtpengine_sock",
+	// "<set_id> == <sock>") per entry. Per-call, the script calls
+	// set_rtpengine_set("<media_node_id>") to address the right one.
+	// Adding a new MediaNode → next heartbeat returns it in this list
+	// → kamailio.cfg auto-regenerates → reload — no operator action.
+	RTPEngineSets []KamailioRTPEngineSet
+}
+
+// KamailioRTPEngineSet is the package-local mirror of the same-named
+// type in the agent client — keeping the template package
+// dependency-light. set_id matches media_nodes.id so /route s
+// media_node_id flows straight in.
+type KamailioRTPEngineSet struct {
+	SetID int64
+	Sock  string
 }
 
 func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, nodeID int64, rtpengineSock string, opts KamailioGenOpts) (listenCfg string, mainCfg string) {
@@ -106,9 +122,20 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 		// internal), the second to position 1 (outgoing / external).
 		// rtpengine then binds the outbound RTP socket on whichever
 		// named interface matches the second entry.
-		manageReq = `rtpengine_offer("replace-origin replace-session-connection direction=any direction=" + $var(m_ip));`
+		//
+		// Set-id selection: when multiple media nodes are configured
+		// (one rtpengine_sock modparam per set), the per-call set is
+		// chosen via the `set=N` flag inside the offer/answer/delete
+		// command — set_rtpengine_set() itself only accepts constant
+		// integers, which doesn t work with a runtime $var. The flag
+		// approach is the documented way for dynamic per-call selection.
+		setFlag := ""
+		if len(opts.RTPEngineSets) > 0 {
+			setFlag = `"set=" + $var(m_node_id) + " " + `
+		}
+		manageReq = `rtpengine_offer(` + setFlag + `"replace-origin replace-session-connection direction=any direction=" + $var(m_ip));`
 		manageRpl = `if (status =~ "(180|183|200)") {
-        rtpengine_answer();
+        rtpengine_answer(` + setFlag + `"");
     }`
 	}
 
@@ -162,7 +189,8 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 		// async-reply path — instead we cache parsed values and call
 		// the relay subroutine directly. ROUTE_REPLY does the same call
 		// after parsing the live /route JSON, so both paths share code.
-		routeCacheCheck = `# Cache key = dialer src IP + DNIS (configurable substring).
+		routeCacheCheck = `# Cache key = dialer src IP + DNIS (configurable substring). Cached
+    # value layout: client_id|carrier_id|c_host|c_port|c_xport|m_ip|sig_ip|m_node_id
     $var(rckey) = $si + ":" + ` + dnisExpr + `;
     if ($sht(rcache=>$var(rckey)) != $null) {
         $var(packed) = $sht(rcache=>$var(rckey));
@@ -173,6 +201,7 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
         $var(c_xport)    = $(var(packed){s.select,4,|});
         $var(m_ip)       = $(var(packed){s.select,5,|});
         $var(sig_ip)     = $(var(packed){s.select,6,|});
+        $var(m_node_id)  = $(var(packed){s.select,7,|});
         $var(dnis_orig)  = $rU;
         $var(ani_orig)   = $fU;
         $sht(call=>$ci::dnis) = $rU;
@@ -191,7 +220,7 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
     # fail on missing/string fields).
     if ($var(dnis_orig) != $null && $sht(call=>$ci::sig) != $null && $var(c_host) != $null) {
         $var(rckey2) = "" + $sht(call=>$ci::sig) + ":" + ` + dnisOrigExpr + `;
-        $sht(rcache=>$var(rckey2)) = "" + $var(client_id) + "|" + $var(carrier_id) + "|" + $var(c_host) + "|" + $var(c_port) + "|" + $var(c_xport) + "|" + $var(m_ip) + "|" + $var(sig_ip);
+        $sht(rcache=>$var(rckey2)) = "" + $var(client_id) + "|" + $var(carrier_id) + "|" + $var(c_host) + "|" + $var(c_port) + "|" + $var(c_xport) + "|" + $var(m_ip) + "|" + $var(sig_ip) + "|" + $var(m_node_id);
     }`
 	}
 
@@ -199,7 +228,22 @@ func GenKamailioConfig(listenIPs []string, controlPlaneURL, agentToken string, n
 	mainCfg = strings.ReplaceAll(mainCfg, "{{AGENT_TOKEN}}", agentToken)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_HEP_HOST}}", hepHost)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{HOMER_CAPTURE_ID}}", strconv.FormatInt(nodeID, 10))
-	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_SOCK}}", rtpengineSock)
+	// rtpengine_sock map. If the operator wired a single sock via YAML
+	// (RTPEngineSock), we still render it as the default set (id 0) so
+	// existing single-node setups behave identically. If the heartbeat
+	// delivered a multi-set list, render one modparam per active media
+	// node — adding/removing a MediaNode auto-propagates here within
+	// one heartbeat tick (no operator action needed).
+	rtpengineSockBlock := `modparam("rtpengine", "rtpengine_sock", "` + rtpengineSock + `")`
+	if len(opts.RTPEngineSets) > 0 {
+		var lines []string
+		for _, s := range opts.RTPEngineSets {
+			lines = append(lines, `modparam("rtpengine", "rtpengine_sock", "`+
+				strconv.FormatInt(s.SetID, 10)+` == `+s.Sock+`")`)
+		}
+		rtpengineSockBlock = strings.Join(lines, "\n")
+	}
+	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_SOCK}}", rtpengineSockBlock)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REQUEST}}", manageReq)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_MANAGE_REPLY}}", manageRpl)
 	mainCfg = strings.ReplaceAll(mainCfg, "{{RTPENGINE_DELETE_ON_BYE}}", deleteOnBye)
@@ -326,7 +370,12 @@ modparam("http_async_client", "tls_verify_host", 0)
 modparam("http_async_client", "tls_verify_peer", 0)
 
 ####### rtpengine #######
-modparam("rtpengine", "rtpengine_sock", "{{RTPENGINE_SOCK}}")
+# Block of modparam("rtpengine", "rtpengine_sock", ...) entries — one
+# per active MediaNode, populated from the heartbeat. set_rtpengine_set
+# below addresses each by media_node_id, so adding a MediaNode in the
+# panel propagates to every SipProxy on the next heartbeat tick with
+# no operator action.
+{{RTPENGINE_SOCK}}
 
 ####### siptrace → HOMER (HEP3) #######
 # Mirror every SIP message routed through this proxy to heplify-server on
@@ -516,6 +565,7 @@ route[ROUTE_REPLY] {
     jansson_get("carrier_port",      $http_rb, "$var(c_port)");
     jansson_get("carrier_transport", $http_rb, "$var(c_xport)");
     jansson_get("media_ip",          $http_rb, "$var(m_ip)");
+    jansson_get("media_node_id",     $http_rb, "$var(m_node_id)");
     jansson_get("client_id",         $http_rb, "$var(client_id)");
     jansson_get("carrier_id",        $http_rb, "$var(carrier_id)");
 

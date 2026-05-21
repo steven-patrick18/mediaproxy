@@ -190,6 +190,9 @@ export interface MediaNode {
   ips_total: number;
   firewall_applied_at?: string | null;
   ssh_auth_method?: "password" | "key";
+  kamailio_workers?: number | null;
+  route_cache_seconds?: number | null;
+  route_cache_key_len?: number | null;
 }
 export interface MetricPoint {
   ts: string;

@@ -61,6 +61,27 @@ function NodeCard({
   const netPct = pct(netIn + netOut, nicMbps);
   const neverSeen = !n.last_seen_at;
 
+  // Inline tune form — workers + cache TTL editable per-node. Applies on
+  // the agent s next heartbeat tick (~10s). Sending null clears the
+  // override and reverts to the agent s compiled-in default.
+  const [tuneOpen, setTuneOpen] = useState(false);
+  const [tuneWorkers, setTuneWorkers] = useState<string>(n.kamailio_workers?.toString() ?? "");
+  const [tuneCacheTTL, setTuneCacheTTL] = useState<string>(n.route_cache_seconds?.toString() ?? "");
+  const [tuneKeyLen, setTuneKeyLen] = useState<string>(n.route_cache_key_len?.toString() ?? "");
+  async function saveTune() {
+    const body: Record<string, number | null> = {};
+    body.kamailio_workers   = tuneWorkers === "" ? null : Number(tuneWorkers);
+    body.route_cache_seconds = tuneCacheTTL === "" ? null : Number(tuneCacheTTL);
+    body.route_cache_key_len = tuneKeyLen === "" ? null : Number(tuneKeyLen);
+    try {
+      await api.patch<void>(`/api/v1/nodes/${n.id}`, body);
+      setTuneOpen(false);
+      onAction();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "tune save failed");
+    }
+  }
+
   async function cmd(type: string, label: string) {
     if (!confirm(`Send "${label}" to ${n.name}?`)) return;
     try {
@@ -183,6 +204,15 @@ function NodeCard({
         <button onClick={() => cmd("restart_kamailio", "Restart Kamailio")} disabled={n.role !== "sip_proxy"} className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100 disabled:opacity-40">
           Restart Kamailio
         </button>
+        {n.role === "sip_proxy" && (
+          <button
+            onClick={() => setTuneOpen((v) => !v)}
+            className="rounded border border-violet-300 px-2 py-1 text-violet-700 hover:bg-violet-50"
+            title="Edit Kamailio workers + /route cache TTL for this node. Applies on next heartbeat (~10s), no SSH needed."
+          >
+            {tuneOpen ? "Cancel" : "Tune"}
+          </button>
+        )}
         <button onClick={() => cmd("reboot", "Reboot")} className="rounded border border-red-300 px-2 py-1 text-red-700 hover:bg-red-50">
           Reboot
         </button>
@@ -196,6 +226,70 @@ function NodeCard({
           <button onClick={del} className="text-red-600 hover:underline">Delete</button>
         </span>
       </div>
+
+      {tuneOpen && n.role === "sip_proxy" && (
+        <div className="mt-3 rounded-md border border-violet-200 bg-violet-50/40 p-3 text-xs">
+          <div className="mb-2 font-medium text-violet-800">Kamailio tunables — applied within 10s</div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <label className="flex flex-col">
+              <span className="text-slate-600">Workers</span>
+              <input
+                type="number"
+                min={4}
+                max={128}
+                value={tuneWorkers}
+                onChange={(e) => setTuneWorkers(e.target.value)}
+                placeholder="default 16"
+                className="mt-1 rounded border border-slate-300 px-2 py-1"
+              />
+              <span className="mt-1 text-[11px] text-slate-500">
+                UDP SIP workers. Bump for {">"}5k concurrent.
+              </span>
+            </label>
+            <label className="flex flex-col">
+              <span className="text-slate-600">/route cache TTL (s)</span>
+              <input
+                type="number"
+                min={-1}
+                max={60}
+                value={tuneCacheTTL}
+                onChange={(e) => setTuneCacheTTL(e.target.value)}
+                placeholder="default 5"
+                className="mt-1 rounded border border-slate-300 px-2 py-1"
+              />
+              <span className="mt-1 text-[11px] text-slate-500">
+                0 or -1 = disabled. 5s is safe for most setups.
+              </span>
+            </label>
+            <label className="flex flex-col">
+              <span className="text-slate-600">Cache DNIS digits</span>
+              <input
+                type="number"
+                min={0}
+                max={15}
+                value={tuneKeyLen}
+                onChange={(e) => setTuneKeyLen(e.target.value)}
+                placeholder="default 0 (full DNIS)"
+                className="mt-1 rounded border border-slate-300 px-2 py-1"
+              />
+              <span className="mt-1 text-[11px] text-slate-500">
+                0 = full DNIS (safe). 3 = country code only (more hits but only safe with broad routes).
+              </span>
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={() => setTuneOpen(false)} className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-100">
+              Cancel
+            </button>
+            <button onClick={saveTune} className="rounded bg-violet-600 px-3 py-1 font-medium text-white hover:bg-violet-700">
+              Save
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Leave a field blank to clear the override and revert to the agent's compiled-in default.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

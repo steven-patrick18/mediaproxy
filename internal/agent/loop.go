@@ -59,11 +59,21 @@ func (a *Agent) boot(ctx context.Context) error {
 	slog.Info("registered", "expected_ips", len(dir.ExpectedIPs))
 	// Prime the CPU + network samplers so the first real tick has deltas.
 	_ = a.sampler.Sample()
-	a.reconcile(ctx, dir.ExpectedIPs)
+	// Boot reconcile: no heartbeat yet, so no tunables / rtpengine sets.
+	// Render with whatever the agent has in cfg.yaml; the first real
+	// heartbeat will deliver server-side overrides and trigger a regen.
+	a.reconcile(ctx, &HeartbeatResp{ExpectedIPs: dir.ExpectedIPs})
 	return nil
 }
 
 func (a *Agent) tick(ctx context.Context) error {
+	// Worker-stuck watchdog (sip_proxy only). Checks Kamailio s UDP recv-Q
+	// every tick. If the queue stays full for >60s the agent restarts
+	// kamailio, healing the wedge without operator intervention.
+	if a.Cfg.Role == "sip_proxy" && !a.Cfg.ReadOnly {
+		checkKamailioStuck(a.Cfg.HeartbeatSeconds)
+	}
+
 	// Before we scan, opportunistically bind every host in tight CIDR blocks
 	// the kernel knows about. This is what makes a dedicated-server with an
 	// "extra IP block" (e.g. RackNerd /26) self-populate without any panel
@@ -110,7 +120,7 @@ func (a *Agent) tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.reconcile(ctx, hb.ExpectedIPs)
+	a.reconcile(ctx, hb)
 	for _, cmd := range hb.Commands {
 		a.runCommand(ctx, cmd)
 	}
@@ -134,7 +144,12 @@ func (a *Agent) tick(ctx context.Context) error {
 //   - in read_only mode, only log drift, never change anything
 //   - add IPs that are expected but missing (self-heal)
 //   - never auto-delete extras; just report
-func (a *Agent) reconcile(_ context.Context, expected []string) {
+//
+// Now also carries through the heartbeat's tunables + rtpengine sets so
+// persistAndServices can render kamailio.cfg with operator-controlled
+// values (workers count, cache TTL, multi-MediaNode map).
+func (a *Agent) reconcile(_ context.Context, hb *HeartbeatResp) {
+	expected := hb.ExpectedIPs
 	bound, err := ScanIPs(a.Cfg.Iface)
 	if err != nil {
 		// Already warned in tick(); avoid a second log line here.
@@ -195,10 +210,10 @@ func (a *Agent) reconcile(_ context.Context, expected []string) {
 		slog.Warn("extra ip on nic (not in expected set)", "ip", ip)
 	}
 
-	persistAndServices(a.Cfg, expected)
+	persistAndServices(a.Cfg, expected, hb.Tunables, hb.RTPEngineSets)
 }
 
-func persistAndServices(cfg *Config, expected []string) {
+func persistAndServices(cfg *Config, expected []string, tunables Tunables, rtpengineSets []RTPEngineSet) {
 	if err := WriteNetplan(cfg.ManagedNetplanFile, cfg.Iface, cfg.CIDR, expected); err != nil {
 		slog.Error("write netplan", "err", err)
 	}
@@ -223,12 +238,40 @@ func persistAndServices(cfg *Config, expected []string) {
 			}
 		}
 	case "sip_proxy":
+		// Server-side tunables (heartbeat-delivered) override the
+		// YAML-config defaults. Operator-set values in the panel take
+		// precedence over what s in /etc/node-agent/config.yaml — that
+		// way you can adjust workers / cache TTL from the GUI without
+		// SSHing in to edit YAML. nil = "no override, use yaml default".
+		children := cfg.KamailioChildren
+		if tunables.KamailioWorkers != nil && *tunables.KamailioWorkers > 0 {
+			children = *tunables.KamailioWorkers
+		}
+		cacheSeconds := cfg.RouteCacheSeconds
+		if tunables.RouteCacheSeconds != nil {
+			cacheSeconds = *tunables.RouteCacheSeconds
+		}
+		cacheKeyLen := cfg.RouteCacheKeyLen
+		if tunables.RouteCacheKeyLen != nil {
+			cacheKeyLen = *tunables.RouteCacheKeyLen
+		}
+
+		// Convert rtpengine sets to the format the template expects.
+		// Sets are pure pass-through; the template renders one
+		// modparam("rtpengine", "rtpengine_sock", "<id> == <sock>") per
+		// entry, and /route delivers media_node_id which matches set_id.
+		var rtpSets []KamailioRTPEngineSet
+		for _, s := range rtpengineSets {
+			rtpSets = append(rtpSets, KamailioRTPEngineSet{SetID: s.SetID, Sock: s.Sock})
+		}
+
 		listenCfg, mainCfg := GenKamailioConfig(expected, cfg.ControlPlaneURL, cfg.AgentToken, cfg.NodeID, cfg.RTPEngineSock,
 			KamailioGenOpts{
-				Children:          cfg.KamailioChildren,
+				Children:          children,
 				TCPChildren:       cfg.KamailioTCPChildren,
-				RouteCacheSeconds: cfg.RouteCacheSeconds,
-				RouteCacheKeyLen:  cfg.RouteCacheKeyLen,
+				RouteCacheSeconds: cacheSeconds,
+				RouteCacheKeyLen:  cacheKeyLen,
+				RTPEngineSets:     rtpSets,
 			})
 		changed, err := WriteKamailioConfigs(cfg.KamailioListenPath, "/etc/kamailio/kamailio.cfg", listenCfg, mainCfg)
 		if err != nil {

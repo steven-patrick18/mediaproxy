@@ -40,6 +40,11 @@ type MediaNode struct {
 	IPsTotal       int      `json:"ips_total"`
 	FirewallAppliedAt *time.Time `json:"firewall_applied_at,omitempty"`
 	SSHAuthMethod  string   `json:"ssh_auth_method"`
+	// Per-node tunables (NULL = agent default applies). Surface here so
+	// the Nodes UI can render the current value in the inline editor.
+	KamailioWorkers   *int `json:"kamailio_workers,omitempty"`
+	RouteCacheSeconds *int `json:"route_cache_seconds,omitempty"`
+	RouteCacheKeyLen  *int `json:"route_cache_key_len,omitempty"`
 }
 
 // computedStatus flips a node to "offline" if last_seen_at is older than
@@ -82,7 +87,8 @@ func (s *Server) listNodes(c *gin.Context) {
 		       COALESCE(n.ips_bound, 0),
 		       (SELECT count(*) FROM node_ips      WHERE node_id = n.id) +
 		       (SELECT count(*) FROM signaling_ips WHERE sip_proxy_node_id = n.id) AS ips_total,
-		       n.firewall_applied_at, n.ssh_auth_method
+		       n.firewall_applied_at, n.ssh_auth_method,
+		       n.kamailio_workers, n.route_cache_seconds, n.route_cache_key_len
 		  FROM media_nodes n
 		 ORDER BY n.id
 	`
@@ -99,7 +105,8 @@ func (s *Server) listNodes(c *gin.Context) {
 			&n.MaxCalls, &n.TranscodingEnabled, &n.Status, &n.LastSeenAt, &n.CreatedAt,
 			&n.ActiveCalls, &n.CPUPct, &n.RAMPct, &n.NetInMbps, &n.NetOutMbps, &n.PacketLossPct,
 			&n.UptimeSeconds, &n.AgentVersion, &n.IPsBound, &n.IPsTotal, &n.FirewallAppliedAt,
-			&n.SSHAuthMethod); err != nil {
+			&n.SSHAuthMethod,
+			&n.KamailioWorkers, &n.RouteCacheSeconds, &n.RouteCacheKeyLen); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -171,6 +178,12 @@ type patchNodeRequest struct {
 	MaxCalls           *int    `json:"max_calls"`
 	TranscodingEnabled *bool   `json:"transcoding_enabled"`
 	SSHAuthMethod      *string `json:"ssh_auth_method"`
+	// Per-node tunables — delivered to the agent via heartbeat, applied
+	// to kamailio.cfg on the next reconcile tick (~10s). Operator edits
+	// these here in the panel instead of SSHing to the box.
+	KamailioWorkers   *int `json:"kamailio_workers"`
+	RouteCacheSeconds *int `json:"route_cache_seconds"`
+	RouteCacheKeyLen  *int `json:"route_cache_key_len"`
 }
 
 func (s *Server) patchNode(c *gin.Context) {
@@ -199,9 +212,13 @@ func (s *Server) patchNode(c *gin.Context) {
 		       nic_gbps            = COALESCE($4, nic_gbps),
 		       max_calls           = COALESCE($5, max_calls),
 		       transcoding_enabled = COALESCE($6, transcoding_enabled),
-		       ssh_auth_method     = COALESCE($7, ssh_auth_method)
+		       ssh_auth_method     = COALESCE($7, ssh_auth_method),
+		       kamailio_workers    = COALESCE($8, kamailio_workers),
+		       route_cache_seconds = COALESCE($9, route_cache_seconds),
+		       route_cache_key_len = COALESCE($10, route_cache_key_len)
 		 WHERE id = $1
-	`, id, req.Name, req.Region, req.NicGbps, req.MaxCalls, req.TranscodingEnabled, req.SSHAuthMethod)
+	`, id, req.Name, req.Region, req.NicGbps, req.MaxCalls, req.TranscodingEnabled, req.SSHAuthMethod,
+		req.KamailioWorkers, req.RouteCacheSeconds, req.RouteCacheKeyLen)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
