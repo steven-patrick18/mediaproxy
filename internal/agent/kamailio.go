@@ -392,6 +392,14 @@ modparam("htable", "htable", "capacity=>size=8;autoexpire=2")
 ####### http_async_client: control-plane #######
 modparam("http_async_client", "tls_verify_host", 0)
 modparam("http_async_client", "tls_verify_peer", 0)
+# F3b: bound the async wait for /route (and call-* posts) at 3000ms. The
+# module default is 500ms, which would cut baseapp off BEFORE its own 2s
+# shed-503 (F3) could be delivered. 3000ms > 2000ms guarantees baseapp's
+# response wins: on overload baseapp returns 503 at 2s, Kamailio receives it
+# and fails the call cleanly with a real 503, instead of a blind libcurl
+# timeout. We deliberately do NOT shorten tm fr_inv_timer — that governs the
+# CARRIER INVITE leg, where legitimate international ring can exceed 3s.
+modparam("http_async_client", "connection_timeout", 3000)
 
 ####### rtpengine #######
 # Block of modparam("rtpengine", "rtpengine_sock", ...) entries — one
@@ -575,10 +583,26 @@ route[ROUTE_REPLY] {
         sl_send_reply("503","Routing unavailable");
         exit;
     }
-    # jansson_get sets $var(err) to "<null>" string when the JSON key is
-    # absent; the != $null check below alone would treat that as "error
-    # present". Probe for the actual SUCCESS keys instead — if signaling_ip
-    # came back, the lookup worked.
+    # CRITICAL: jansson_get does NOT reset the target $var when the JSON key is
+    # absent — it leaves whatever value THIS worker held from its previous
+    # call. A reused worker that last handled a successful /route keeps a stale
+    # signaling_ip (and carrier/media), so an error response like
+    # {"code":503,"error":"..."} would slip past the check below and RELAY the
+    # call with stale routing: over-capacity calls never get shed (the 503 /
+    # capacity-stamp branch is skipped) and errored calls (403/404/486/503)
+    # mis-route to whatever carrier the worker last used. Reset every parsed
+    # var to "" first so a missing key reads as empty and the error branch
+    # fires deterministically. SUCCESS is detected by signaling_ip being set.
+    $var(sig_ip) = "";
+    $var(err) = "";
+    $var(code) = "";
+    $var(c_host) = "";
+    $var(c_port) = "";
+    $var(c_xport) = "";
+    $var(m_ip) = "";
+    $var(m_node_id) = "";
+    $var(client_id) = "";
+    $var(carrier_id) = "";
     jansson_get("signaling_ip", $http_rb, "$var(sig_ip)");
     xlog("L_NOTICE", "mp-route-reply: sig_ip=$var(sig_ip)\n");
     if ($var(sig_ip) == $null || $var(sig_ip) == "<null>" || $var(sig_ip) == "") {

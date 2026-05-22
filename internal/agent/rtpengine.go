@@ -67,10 +67,31 @@ func GenRTPEngineConfig(mediaIPs []string, ngListen string, portMin, portMax int
 	fmt.Fprintf(&b, "listen-ng = %s\n", ngListen)
 	fmt.Fprintf(&b, "port-min = %d\n", portMin)
 	fmt.Fprintf(&b, "port-max = %d\n", portMax)
-	fmt.Fprintln(&b, "log-level = 6")
+	fmt.Fprintln(&b, "log-level = 5")
 	fmt.Fprintln(&b, "table = 0")
 	fmt.Fprintln(&b, "tos = 184")
-	fmt.Fprintln(&b, "delete-delay = 30")
+	// delete-delay: seconds rtpengine keeps a session around after BYE
+	// before freeing its UDP ports. The package default of 30s is fine
+	// for low-volume installs but at >50 cps it eats the port range:
+	//   delete-delay × cps × 4 ports/call = lingering port use
+	//   30 × 100 = 12,000 ports out of 30,000 just on closed calls.
+	// Once the range fills, rtpengine silently refuses new offers and
+	// the SipProxy sees timeouts. 5s gives buggy peers a window to send
+	// late media without holding ports hostage at scale.
+	fmt.Fprintln(&b, "delete-delay = 5")
+	// timeout: seconds of NO RTP traffic before rtpengine reaps the
+	// session unilaterally. Without this set explicitly some Ubuntu
+	// builds default to 0 (never time out) — a stuck call with no BYE
+	// holds its ports forever. 60s matches the carrier-side RTP timeout
+	// expectation and is invisible to live calls.
+	fmt.Fprintln(&b, "timeout = 60")
+	// silent-timeout: seconds of silence (no RTP, but the stream is
+	// known to exist) before reap. 3600 = 1h, matches default but
+	// explicit so an operator reading the conf doesn't have to guess.
+	fmt.Fprintln(&b, "silent-timeout = 3600")
+	// final-timeout = 0 → no absolute cap on call duration. Sessions
+	// only die via BYE / timeout / silent-timeout.
+	fmt.Fprintln(&b, "final-timeout = 0")
 	return b.String()
 }
 

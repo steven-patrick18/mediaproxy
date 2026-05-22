@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"mediaproxy/internal/sigcache"
 
 	"github.com/gin-gonic/gin"
@@ -37,19 +39,25 @@ func (s *Server) Router() *gin.Engine {
 	agent.Use(requireAgentAuth(s.deps.PG))
 	{
 		agent.POST("/register", s.agentRegister)
-		agent.POST("/heartbeat", s.agentHeartbeat)
 		agent.POST("/command-result", s.agentCommandResult)
 		agent.GET("/firewall", s.agentFirewallConfig)
 		agent.POST("/firewall-applied", s.agentFirewallApplied)
-		agent.POST("/call-start", s.callStart)
+		// F3: the hot, Kamailio-driven paths get a 2s server-side deadline so
+		// a slow query / row-lock wait sheds (frees the pooled conn) instead
+		// of pinning a goroutine+connection and draining the pool. /heartbeat
+		// is included because it competes for the same pool and runs every
+		// 10s per node. The 2s bound is < the 3s http_async_client timeout
+		// (F3b) so baseapp's response always wins and Kamailio fails cleanly.
+		agent.POST("/heartbeat", withTimeout(2*time.Second), s.agentHeartbeat)
+		agent.POST("/call-start", withTimeout(2*time.Second), s.callStart)
 		agent.POST("/call-progress", s.callProgress)
 		agent.POST("/call-reinvite", s.callReinvite)
 		agent.POST("/call-quality", s.callQuality)
-		agent.POST("/call-end", s.callEnd)
+		agent.POST("/call-end", withTimeout(2*time.Second), s.callEnd)
 		// Kamailio's http_async_query carries the agent's bearer token; the
 		// same /route handler is also exposed under the admin-auth group
 		// below for the panel's test-route diagnostic.
-		agent.GET("/route", s.routeResolve)
+		agent.GET("/route", withTimeout(2*time.Second), s.routeResolve)
 	}
 
 	v1 := r.Group("/api/v1")

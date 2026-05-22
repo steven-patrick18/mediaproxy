@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// PingRTPEngineNG is a liveness probe: it issues the cheapest possible NG
+// command (statistics) and reports success if a cookie-matching reply
+// comes back, regardless of body contents. Use this from the watchdog —
+// QueryRTPEngineSessions returns an error when the body lacks a session
+// counter, which on some rtpengine builds happens at idle and would
+// trigger false-positive restarts.
+func PingRTPEngineNG() error {
+	_, err := ngRoundtrip("d7:command10:statisticse")
+	return err
+}
+
 // QueryRTPEngineSessions asks rtpengine over its NG control socket how many
 // call streams are currently active. Returns (count, nil) on success.
 //

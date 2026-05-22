@@ -74,6 +74,15 @@ func (a *Agent) tick(ctx context.Context) error {
 		checkKamailioStuck(a.Cfg.HeartbeatSeconds)
 	}
 
+	// rtpengine wedge watchdog (media only). Probes the NG control
+	// socket; if it stops replying for >60s, restart rtpengine-daemon.
+	// Fixes the "rtpengine active per systemctl but not relaying" case
+	// where Kamailio's rtpengine_offer() times out and INVITEs silently
+	// fail mid-flight.
+	if a.Cfg.Role == "media" && !a.Cfg.ReadOnly {
+		checkRTPEngineStuck(a.Cfg.HeartbeatSeconds)
+	}
+
 	// Before we scan, opportunistically bind every host in tight CIDR blocks
 	// the kernel knows about. This is what makes a dedicated-server with an
 	// "extra IP block" (e.g. RackNerd /26) self-populate without any panel

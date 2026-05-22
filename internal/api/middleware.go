@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,6 +12,24 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// withTimeout bounds a handler's request context to d. We replace c.Request
+// with one carrying the deadline, so every c.Request.Context() inside the
+// handler (and every pgx call that uses it) inherits the timeout — a slow
+// query or row-lock wait returns context.DeadlineExceeded and FREES the
+// pooled DB connection instead of pinning a goroutine+connection. This is the
+// deterministic shed valve (F3): under contention baseapp fails fast (Kamailio
+// then 503s the call cleanly) rather than letting the pool drain and the
+// process go live-but-frozen. The bound is independent of libcurl/Kamailio
+// connection-close timing, which we cannot rely on.
+func withTimeout(d time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
 
 func requestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {

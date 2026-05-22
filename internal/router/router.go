@@ -205,17 +205,27 @@ func Resolve(ctx context.Context, pg *pgxpool.Pool, rdb *redis.Client, srcIP, dn
 		// Placeholder: same as round_robin until health scoring lands.
 		fallthrough
 	default: // round_robin
-		idx := cursor % len(cands)
-		chosen = cands[idx]
-		if _, err := pg.Exec(ctx,
-			`UPDATE assignments SET rotation_cursor = ($1 + 1) WHERE id = $2`,
-			cursor, assignID); err != nil {
-			// If the cursor doesn't advance, round_robin degenerates to
-			// "always pick IP 0" — surface loudly so we catch DB issues
-			// before they distort traffic distribution.
-			slog.Error("router: rotation_cursor update failed",
-				"assignment_id", assignID, "cursor", cursor, "err", err)
+		// Atomic read-modify-write in ONE statement. The old code read
+		// rotation_cursor in the assignment SELECT and wrote `$cursor + 1` in
+		// a SEPARATE UPDATE — a lost-update race: concurrent INVITEs for the
+		// same assignment read the SAME cursor, picked the SAME IP, and all
+		// wrote the SAME value, so round_robin stopped rotating under load.
+		// `SET rotation_cursor = rotation_cursor + 1 ... RETURNING` makes the
+		// increment atomic per call (correct rotation under concurrency) and
+		// holds the row lock only for the single statement.
+		var nextCursor int64
+		if err := pg.QueryRow(ctx,
+			`UPDATE assignments SET rotation_cursor = rotation_cursor + 1
+			  WHERE id = $1 RETURNING rotation_cursor`,
+			assignID).Scan(&nextCursor); err != nil {
+			// Fall back to the cursor we read with the assignment so we still
+			// return a usable IP instead of erroring the call.
+			slog.Error("router: rotation_cursor atomic increment failed",
+				"assignment_id", assignID, "err", err)
+			nextCursor = int64(cursor)
 		}
+		idx := int(nextCursor) % len(cands)
+		chosen = cands[idx]
 	}
 
 	return &Decision{

@@ -440,7 +440,7 @@ func (s *Server) callEnd(c *gin.Context) {
 	}
 	if mediaIP != nil && *mediaIP != "" {
 		if _, err := s.deps.PG.Exec(c.Request.Context(),
-			`UPDATE node_ips SET current_calls = GREATEST(current_calls - 1, 0) WHERE host(ip_address) = $1`, *mediaIP); err != nil {
+			`UPDATE node_ips SET current_calls = GREATEST(current_calls - 1, 0) WHERE ip_address = $1::inet`, *mediaIP); err != nil {
 			slog.Error("call-end: decrement node_ips.current_calls failed",
 				"err", err, "call_id", req.CallID, "media_ip", *mediaIP, "node_id", nodeID)
 		}

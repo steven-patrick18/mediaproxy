@@ -54,9 +54,12 @@ func main() {
 		SigCache:  &sigcache.Writer{PG: pg, Redis: rdb},
 	})
 
-	// Background workers: webhook delivery + node-offline alerting.
+	// Background workers: webhook delivery + node-offline alerting +
+	// current_calls reconcile (heals node_ips counter drift so a lost
+	// call-end decrement can't accumulate into a routing outage).
 	srv.StartWebhookWorker(ctx)
 	srv.StartAlertWorker(ctx)
+	srv.StartCurrentCallsReconciler(ctx)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPListen,
